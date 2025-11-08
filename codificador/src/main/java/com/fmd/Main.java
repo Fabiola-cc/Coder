@@ -11,12 +11,11 @@ import org.antlr.v4.runtime.tree.ParseTree;
 
 import com.fmd.CompiscriptLexer;
 import com.fmd.CompiscriptParser;
-import com.fmd.tac.TACVisitor;
 
 public class Main {
     public static void main(String[] args) throws Exception {
         // 1. Leer archivo de entrada
-        String inputFile = args.length > 0 ? args[0] : "src\\main\\java\\com\\fmd\\program.cps";
+        String inputFile = args.length > 0 ? args[0] : "codificador\\src\\main\\java\\com\\fmd\\program.cps";
         String code = Files.readString(Path.of(inputFile));
 
         System.out.println(" CÓDIGO FUENTE ");
