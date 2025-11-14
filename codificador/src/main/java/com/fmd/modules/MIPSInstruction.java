@@ -14,9 +14,7 @@ package com.fmd.modules;
  */
 public class MIPSInstruction {
 
-    // ============================================
     // OPCODES MIPS
-    // ============================================
     public enum OpCode {
         // Aritméticas
         ADD,    // add $rd, $rs, $rt
@@ -82,10 +80,8 @@ public class MIPSInstruction {
         LABEL,   // label:
         COMMENT  // # comentario
     }
-
-    // ============================================
+    
     // CAMPOS
-    // ============================================
     private OpCode opcode;
     private String rd;          // Registro destino
     private String rs;          // Registro fuente 1
@@ -94,9 +90,7 @@ public class MIPSInstruction {
     private String label;       // Etiqueta para saltos
     private String comment;     // Comentario opcional
 
-    // ============================================
     // CONSTRUCTOR ÚNICO
-    // ============================================
 
     /**
      * Constructor privado - usar métodos estáticos para crear
@@ -105,9 +99,7 @@ public class MIPSInstruction {
         this.opcode = opcode;
     }
 
-    // ============================================
     // MÉTODOS FACTORY (CONSTRUCTORES ESTÁTICOS)
-    // ============================================
 
     /**
      * Tipo R: add $rd, $rs, $rt
@@ -242,10 +234,7 @@ public class MIPSInstruction {
         return new MIPSInstruction(OpCode.NOP);
     }
 
-    // ============================================
     // GETTERS Y SETTERS
-    // ============================================
-
     public OpCode getOpcode() { return opcode; }
     public String getRd() { return rd; }
     public String getRs() { return rs; }
@@ -256,10 +245,7 @@ public class MIPSInstruction {
 
     public void setComment(String comment) { this.comment = comment; }
 
-    // ============================================
     // GENERACIÓN DE CÓDIGO
-    // ============================================
-
     /**
      * Convierte la instrucción a su representación textual MIPS
      * Este método es CRÍTICO para debugging y generación del .asm

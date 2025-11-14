@@ -2,48 +2,39 @@ package com.fmd;
 
 import com.fmd.modules.Symbol;
 import com.fmd.modules.MIPSInstruction;
+import com.fmd.modules.Register;
 import java.util.*;
 
 /**
- * Asignador de Registros para MIPS
- *
- * RESPONSABILIDADES:
- * - Asignar registros a variables/temporales usando getReg()
- * - Mantener descriptores de registros (qué contiene cada uno)
- * - Implementar spilling cuando no hay registros disponibles
- * - Tracking de dirty bits para optimizar stores
+ * Asignador de Registros para MIPS (Actualizado con clase Register)
  */
 public class RegisterAllocator {
 
-    // ============================================
-    // REGISTROS DISPONIBLES
-    // ============================================
-    private static final String[] TEMP_REGISTERS = {
-            "$t0", "$t1", "$t2", "$t3", "$t4", "$t5", "$t6", "$t7"
+    // REGISTROS DISPONIBLES (usando objetos Register)
+    private static final Register[] TEMP_REGISTERS = {
+            Register.T0, Register.T1, Register.T2, Register.T3,
+            Register.T4, Register.T5, Register.T6, Register.T7
     };
 
-    private static final String[] SAVED_REGISTERS = {
-            "$s0", "$s1", "$s2", "$s3", "$s4", "$s5", "$s6", "$s7"
+    private static final Register[] SAVED_REGISTERS = {
+            Register.S0, Register.S1, Register.S2, Register.S3,
+            Register.S4, Register.S5, Register.S6, Register.S7
     };
 
-    // ============================================
     // ESTADO DEL ALLOCATOR
-    // ============================================
-    private Map<String, RegisterDescriptor> registerState;      // registro -> descriptor
-    private Map<String, String> variableToRegister;             // variable -> registro actual
-    private Stack<String> freeRegisters;                        // registros disponibles
+    private Map<Register, RegisterDescriptor> registerState;    // registro -> descriptor
+    private Map<String, Register> variableToRegister;           // variable -> registro actual
+    private Stack<Register> freeRegisters;                      // registros disponibles
     private Map<String, Integer> lastUse;                       // variable -> última línea usada
     private int currentLine;                                    // línea TAC actual
 
     // Referencia a tabla de símbolos (para offsets)
     private TACGenerator tacGenerator;
 
-    // Instrucciones MIPS generadas
+    // Instrucciones MIPS generadas (spills)
     private List<MIPSInstruction> instructions;
 
-    // ============================================
     // CONSTRUCTOR
-    // ============================================
     public RegisterAllocator(TACGenerator tacGenerator) {
         this.tacGenerator = tacGenerator;
         this.registerState = new HashMap<>();
@@ -55,56 +46,58 @@ public class RegisterAllocator {
 
         // Inicializar registros temporales como libres
         for (int i = TEMP_REGISTERS.length - 1; i >= 0; i--) {
-            freeRegisters.push(TEMP_REGISTERS[i]);
-            registerState.put(TEMP_REGISTERS[i], new RegisterDescriptor(TEMP_REGISTERS[i]));
+            Register reg = TEMP_REGISTERS[i];
+            freeRegisters.push(reg);
+            registerState.put(reg, new RegisterDescriptor(reg.getName()));
         }
 
         // Inicializar registros saved (para variables persistentes)
-        for (String reg : SAVED_REGISTERS) {
-            registerState.put(reg, new RegisterDescriptor(reg));
+        for (Register reg : SAVED_REGISTERS) {
+            registerState.put(reg, new RegisterDescriptor(reg.getName()));
         }
     }
 
-    // ============================================
-    // MÉTODO PRINCIPAL: getReg()
-    // ============================================
+    // METODO PRINCIPAL: getReg()
     /**
-     * ALGORITMO getReg() - NÚCLEO DEL PROYECTO
-     * Asigna un registro para una variable/temporal según el algoritmo del Dragon Book
-     *
-     * @param variable Nombre de la variable o temporal (ej: "t1", "x", "arr")
-     * @return Registro MIPS asignado (ej: "$t0", "$s1")
+     * ALGORITMO getReg() - Asigna un registro para una variable
+     * @param variable Nombre de la variable o temporal
+     * @return Nombre del registro MIPS asignado (String para compatibilidad)
      */
     public String getReg(String variable) {
+        Register reg = allocateRegister(variable);
+        return reg.getName();
+    }
+
+    /**
+     * Versión que retorna objeto Register
+     */
+    public Register allocateRegister(String variable) {
         // PASO 1: Si ya tiene registro asignado, reutilizarlo
         if (variableToRegister.containsKey(variable)) {
-            String reg = variableToRegister.get(variable);
-            lastUse.put(variable, currentLine); // actualizar uso
+            Register reg = variableToRegister.get(variable);
+            lastUse.put(variable, currentLine);
             return reg;
         }
 
         // PASO 2: Si hay registros libres, tomar uno
         if (!freeRegisters.isEmpty()) {
-            String reg = freeRegisters.pop();
+            Register reg = freeRegisters.pop();
             assignRegister(variable, reg);
             return reg;
         }
 
         // PASO 3: ALGORITMO DE DESALOJO (spilling)
-        // No hay registros libres, hay que desalojar uno
-        String victim = selectVictim();
+        Register victim = selectVictim();
         spillRegister(victim);
         assignRegister(variable, victim);
         return victim;
     }
 
-    // ============================================
     // ASIGNACIÓN Y LIBERACIÓN
-    // ============================================
     /**
      * Asigna un registro a una variable
      */
-    private void assignRegister(String variable, String register) {
+    private void assignRegister(String variable, Register register) {
         RegisterDescriptor desc = registerState.get(register);
         desc.assign(variable);
         variableToRegister.put(variable, register);
@@ -112,16 +105,21 @@ public class RegisterAllocator {
     }
 
     /**
-     * Libera un registro (lo marca como disponible)
+     * Libera un registro
      */
-    public void freeRegister(String register) {
+    public void freeRegister(String registerName) {
+        Register reg = findRegister(registerName);
+        if (reg != null) {
+            freeRegister(reg);
+        }
+    }
+
+    public void freeRegister(Register register) {
         RegisterDescriptor desc = registerState.get(register);
         if (desc != null && desc.getVariable() != null) {
-            // Si está dirty, hacer spill antes de liberar
             if (desc.isDirty()) {
                 spillRegister(register);
             } else {
-                // Solo limpiar sin spill
                 variableToRegister.remove(desc.getVariable());
                 desc.free();
                 freeRegisters.push(register);
@@ -129,24 +127,20 @@ public class RegisterAllocator {
         }
     }
 
-    // ============================================
     // SPILLING (DESALOJO A MEMORIA)
-    // ============================================
     /**
-     * Guarda un registro en memoria (stack o frame)
-     * Solo guarda si el registro está "dirty" (modificado)
+     * Guarda un registro en memoria
      */
-    private void spillRegister(String register) {
+    private void spillRegister(Register register) {
         RegisterDescriptor desc = registerState.get(register);
 
         if (desc.isDirty()) {
             String variable = desc.getVariable();
             int offset = getVariableOffset(variable);
 
-            // Generar instrucción MIPS: sw $reg, offset($sp)
             MIPSInstruction store = MIPSInstruction.loadStore(
                     MIPSInstruction.OpCode.SW,
-                    register,
+                    register.getName(),
                     offset + "($sp)"
             );
             store.setComment("spill " + variable);
@@ -155,31 +149,27 @@ public class RegisterAllocator {
             System.out.println("  [SPILL] " + variable + " -> memoria (offset " + offset + ")");
         }
 
-        // Liberar el registro
         variableToRegister.remove(desc.getVariable());
         desc.free();
     }
 
     /**
      * Selecciona registro víctima para desalojar
-     * Estrategia: Furthest Use (el que se usa más lejos en el futuro)
      */
-    private String selectVictim() {
-        String victim = null;
+    private Register selectVictim() {
+        Register victim = null;
         int maxDistance = -1;
 
-        // Buscar el registro cuya variable se usa más lejos
-        for (String reg : TEMP_REGISTERS) {
+        for (Register reg : TEMP_REGISTERS) {
             RegisterDescriptor desc = registerState.get(reg);
             if (desc.getVariable() != null) {
                 String var = desc.getVariable();
 
-                // Si es temporal (t1, t2...), priorizar para spill
+                // Priorizar temporales para spill
                 if (var.startsWith("t")) {
                     return reg;
                 }
 
-                // Calcular distancia al próximo uso
                 int distance = getNextUse(var);
                 if (distance > maxDistance) {
                     maxDistance = distance;
@@ -188,36 +178,29 @@ public class RegisterAllocator {
             }
         }
 
-        // Si no encontró víctima, usar el primero disponible
         return victim != null ? victim : TEMP_REGISTERS[0];
     }
 
     /**
      * Estima cuándo se usará una variable de nuevo
-     * (simplificado: usa lastUse como proxy)
      */
     private int getNextUse(String variable) {
         Integer last = lastUse.get(variable);
         if (last == null) return Integer.MAX_VALUE;
-        return currentLine - last; // distancia desde último uso
+        return currentLine - last;
     }
 
-    // ============================================
     // ACCESO A MEMORIA (LOAD/STORE)
-    // ============================================
     /**
      * Obtiene el offset en el frame para una variable
-     * Usa la tabla de símbolos del TAC que ya tiene los offsets calculados
      */
     private int getVariableOffset(String variable) {
-        // Buscar símbolo en la tabla actual
         Symbol sym = tacGenerator.getSymbol(variable);
 
         if (sym != null && sym.getOffset() >= 0) {
             return sym.getOffset();
         }
 
-        // Si no se encuentra, retornar offset por defecto
         System.err.println("WARNING: Variable " + variable + " sin offset, usando 0");
         return 0;
     }
@@ -225,50 +208,67 @@ public class RegisterAllocator {
     /**
      * Carga una variable de memoria a registro
      */
-    public void loadVariable(String variable, String register) {
+    public void loadVariable(String variable, String registerName) {
+        Register register = findRegister(registerName);
+        if (register != null) {
+            loadVariable(variable, register);
+        }
+    }
+
+    public void loadVariable(String variable, Register register) {
         int offset = getVariableOffset(variable);
 
         MIPSInstruction load = MIPSInstruction.loadStore(
                 MIPSInstruction.OpCode.LW,
-                register,
+                register.getName(),
                 offset + "($sp)"
         );
         load.setComment("load " + variable);
         instructions.add(load);
 
-        // Actualizar descriptor
         RegisterDescriptor desc = registerState.get(register);
         desc.assign(variable);
-        desc.setClean(); // recién cargado, no está dirty
+        desc.setClean();
         variableToRegister.put(variable, register);
     }
 
     /**
      * Guarda un registro en memoria
      */
-    public void storeVariable(String register, String variable) {
+    public void storeVariable(String registerName, String variable) {
+        Register register = findRegister(registerName);
+        if (register != null) {
+            storeVariable(register, variable);
+        }
+    }
+
+    public void storeVariable(Register register, String variable) {
         int offset = getVariableOffset(variable);
 
         MIPSInstruction store = MIPSInstruction.loadStore(
                 MIPSInstruction.OpCode.SW,
-                register,
+                register.getName(),
                 offset + "($sp)"
         );
         store.setComment("store " + variable);
         instructions.add(store);
 
-        // Marcar como limpio (ya sincronizado con memoria)
         RegisterDescriptor desc = registerState.get(register);
         desc.setClean();
     }
 
-    // ============================================
     // DIRTY BIT MANAGEMENT
-    // ============================================
     /**
-     * Marca un registro como "dirty" (modificado, no sincronizado)
+     * Marca un registro como "dirty"
      */
-    public void markDirty(String register) {
+    public void markDirty(String registerName) {
+        Register register = findRegister(registerName);
+        if (register != null) {
+            markDirty(register);
+        }
+    }
+
+    public void markDirty(Register register) {
         RegisterDescriptor desc = registerState.get(register);
         if (desc != null) {
             desc.setDirty();
@@ -277,10 +277,9 @@ public class RegisterAllocator {
 
     /**
      * Sincroniza todos los registros dirty con memoria
-     * (útil al final de bloques básicos o antes de llamadas)
      */
     public void flushAll() {
-        for (String reg : registerState.keySet()) {
+        for (Register reg : registerState.keySet()) {
             RegisterDescriptor desc = registerState.get(reg);
             if (desc.isDirty()) {
                 spillRegister(reg);
@@ -288,14 +287,12 @@ public class RegisterAllocator {
         }
     }
 
-    // ============================================
-    // CONTEXT MANAGEMENT (para llamadas a función)
-    // ============================================
+    // CONTEXT MANAGEMENT
     /**
      * Guarda todos los registros $t antes de una llamada
      */
     public void saveTemporaries() {
-        for (String reg : TEMP_REGISTERS) {
+        for (Register reg : TEMP_REGISTERS) {
             RegisterDescriptor desc = registerState.get(reg);
             if (desc.getVariable() != null && desc.isDirty()) {
                 spillRegister(reg);
@@ -304,10 +301,10 @@ public class RegisterAllocator {
     }
 
     /**
-     * Guarda todos los registros $s (caller-saved en convención MIPS)
+     * Guarda todos los registros $s
      */
     public void saveSavedRegisters() {
-        for (String reg : SAVED_REGISTERS) {
+        for (Register reg : SAVED_REGISTERS) {
             RegisterDescriptor desc = registerState.get(reg);
             if (desc.getVariable() != null) {
                 spillRegister(reg);
@@ -315,25 +312,41 @@ public class RegisterAllocator {
         }
     }
 
-    // ============================================
     // UTILIDADES
-    // ============================================
     /**
-     * Avanza el contador de línea (para algoritmo de próximo uso)
+     * Encuentra un objeto Register por su nombre
+     */
+    private Register findRegister(String name) {
+        for (Register reg : TEMP_REGISTERS) {
+            if (reg.getName().equals(name)) {
+                return reg;
+            }
+        }
+        for (Register reg : SAVED_REGISTERS) {
+            if (reg.getName().equals(name)) {
+                return reg;
+            }
+        }
+        // Si no está en los arrays, crear uno nuevo
+        return new Register(name);
+    }
+
+    /**
+     * Avanza el contador de línea
      */
     public void advanceLine() {
         currentLine++;
     }
 
     /**
-     * Obtiene las instrucciones MIPS generadas
+     * Obtiene las instrucciones MIPS generadas (spills)
      */
     public List<MIPSInstruction> getInstructions() {
         return instructions;
     }
 
     /**
-     * Reinicia el estado del allocator (para nueva función)
+     * Reinicia el estado del allocator
      */
     public void reset() {
         variableToRegister.clear();
@@ -342,11 +355,18 @@ public class RegisterAllocator {
         instructions.clear();
         currentLine = 0;
 
-        // Reinicializar registros
         for (int i = TEMP_REGISTERS.length - 1; i >= 0; i--) {
-            freeRegisters.push(TEMP_REGISTERS[i]);
-            registerState.get(TEMP_REGISTERS[i]).free();
+            Register reg = TEMP_REGISTERS[i];
+            freeRegisters.push(reg);
+            registerState.get(reg).free();
         }
+    }
+
+    /**
+     * Obtiene variables activas
+     */
+    public Set<String> getActiveVariables() {
+        return new HashSet<>(variableToRegister.keySet());
     }
 
     /**
@@ -354,9 +374,9 @@ public class RegisterAllocator {
      */
     public void printState() {
         System.out.println("\n=== ESTADO DE REGISTROS ===");
-        for (String reg : TEMP_REGISTERS) {
+        for (Register reg : TEMP_REGISTERS) {
             RegisterDescriptor desc = registerState.get(reg);
-            System.out.println(reg + ": " + desc);
+            System.out.println(reg.getName() + ": " + desc);
         }
         System.out.println("Variables asignadas: " + variableToRegister);
         System.out.println("Registros libres: " + freeRegisters.size());
