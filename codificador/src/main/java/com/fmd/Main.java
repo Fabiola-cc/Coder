@@ -2,9 +2,11 @@ package com.fmd;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import com.fmd.modules.SemanticError;
 
+import com.fmd.modules.TACInstruction;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -15,7 +17,7 @@ import com.fmd.CompiscriptParser;
 public class Main {
     public static void main(String[] args) throws Exception {
         // 1. Leer archivo de entrada
-        String inputFile = args.length > 0 ? args[0] : "codificador\\src\\main\\java\\com\\fmd\\program.cps";
+        String inputFile = args.length > 0 ? args[0] : "src\\main\\java\\com\\fmd\\program.cps";
         String code = Files.readString(Path.of(inputFile));
 
         System.out.println(" CÓDIGO FUENTE ");
@@ -57,5 +59,39 @@ public class Main {
 
         System.out.println("\n TABLA DE SÍMBOLOS ACTUALIZADA \n");
         visitor_tac.printTable();
+
+        List<TACInstruction> tacInstructions = visitor_tac.getGenerator().getInstructions();
+
+        if (tacInstructions == null || tacInstructions.isEmpty()) {
+            System.out.println("⚠ No se generaron instrucciones TAC");
+            return;
+        }
+
+        // Mostrar TAC
+        System.out.println("\n RESULTADO TAC \n");
+        for (int i = 0; i < tacInstructions.size(); i++) {
+            TACInstruction tac = tacInstructions.get(i);
+            System.out.printf("%3d: %s%n", i, tac.toString());
+        }
+
+        // 8. Generar código MIPS
+        System.out.println("GENERACIÓN DE CÓDIGO MIPS");
+
+        MIPSGenerator mipsGenerator = new MIPSGenerator(visitor_tac.getGenerator());
+
+        // Agregar variables globales al segmento de datos si las hay
+        mipsGenerator.addGlobalVariables();
+
+        // Generar código MIPS
+        String mipsCode = mipsGenerator.generate(tacInstructions);
+
+        System.out.println(mipsCode);
+
+        // 9. Guardar código MIPS en archivo
+        String outputFile = inputFile.replace(".cps", ".asm");
+        Files.writeString(Path.of(outputFile), mipsCode);
+
+        System.out.println("Código MIPS generado exitosamente");
+        System.out.println("Archivo guardado en: " + outputFile);
     }
 }
