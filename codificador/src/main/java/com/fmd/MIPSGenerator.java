@@ -162,6 +162,9 @@ public class MIPSGenerator {
             // Detectar entrada a nuevo scope
             if (tac.getOp() == TACInstruction.OpType.LABEL_FUNCTION ||
                     tac.getOp() == TACInstruction.OpType.LABEL_CLASS) {
+                Symbol currentSym = tacGenerator.getSymbol(tac.getLabel());
+                String line = String.valueOf(currentSym.getLine());
+                tacGenerator.setCurrentScopeLine(line);
                 String label = tac.getLabel();
                 scopeStack.push(label);
                 scopeInstructions.put(label, new ArrayList<>());
