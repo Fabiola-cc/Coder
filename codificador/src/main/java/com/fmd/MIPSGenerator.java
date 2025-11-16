@@ -27,6 +27,10 @@ public class MIPSGenerator {
     private String currentFunction;
     private TACGenerator tacGenerator;
 
+    private Map<String, List<MIPSInstruction>> scopeInstructions; // label -> instrucciones
+    private Stack<String> scopeStack; // stack de labels activos
+    private List<MIPSInstruction> globalInstructions; // código fuera de funciones/clases
+
     public MIPSGenerator(TACGenerator tacGenerator) {
         this.tacGenerator = tacGenerator;
         this.allocator = new RegisterAllocator(tacGenerator);
@@ -36,6 +40,10 @@ public class MIPSGenerator {
         this.labelCounter = 0;
         this.stringCounter = 0;
         this.currentFunction = null;
+
+        this.scopeInstructions = new HashMap<>();
+        this.scopeStack = new Stack<>();
+        this.globalInstructions = new ArrayList<>();
     }
 
     /**
@@ -108,45 +116,74 @@ public class MIPSGenerator {
         sb.append("\n.text\n");
         sb.append(".globl main\n");
         sb.append("main:\n");
-        sb.append("    # Inicialización del programa\n");
         sb.append("    move    $fp, $sp\n\n");
 
-        // Generar código del programa principal
-        for (MIPSInstruction instr : instructions) {
+        // 1. Código global (main)
+        for (MIPSInstruction instr : globalInstructions) {
             sb.append(instr.toString()).append("\n");
         }
 
-        // Exit del programa
+        // Exit del programa principal
         sb.append("\n    # Fin del programa\n");
         sb.append("    li      $v0, 10\n");
-        sb.append("    syscall\n");
+        sb.append("    syscall\n\n");
 
-        sb.append("\n");
+        // 2. Todas las funciones y clases
+        for (Map.Entry<String, List<MIPSInstruction>> entry : scopeInstructions.entrySet()) {
+            for (MIPSInstruction instr : entry.getValue()) {
+                sb.append(instr.toString()).append("\n");
+            }
+            sb.append("\n");
+        }
 
-        // Crear lista temporal para las funciones runtime
+        // 3. Runtime functions
         List<MIPSInstruction> tempInstructions = new ArrayList<>(instructions);
         instructions = new ArrayList<>();
-
         generateRuntimeFunctions();
 
-        // Agregar las funciones runtime generadas
         for (MIPSInstruction instr : instructions) {
             sb.append(instr.toString()).append("\n");
         }
 
-        // Restaurar instrucciones originales
         instructions = tempInstructions;
-
 
         return sb.toString();
     }
+
     /**
      * Genera todas las instrucciones MIPS
      */
     private void generateInstructions(List<TACInstruction> tacList) {
+        instructions = globalInstructions; // Empezar en scope global
+
         for (TACInstruction tac : tacList) {
             allocator.advanceLine();
+
+            // Detectar entrada a nuevo scope
+            if (tac.getOp() == TACInstruction.OpType.LABEL_FUNCTION ||
+                    tac.getOp() == TACInstruction.OpType.LABEL_CLASS) {
+                String label = tac.getLabel();
+                scopeStack.push(label);
+                scopeInstructions.put(label, new ArrayList<>());
+                instructions = scopeInstructions.get(label); // Cambiar destino
+            }
+
             generateInstruction(tac);
+
+            // Detectar salida de scope
+            if (tac.getOp() == TACInstruction.OpType.END ||
+                    tac.getOp() == TACInstruction.OpType.END_CLASS) {
+                if (!scopeStack.isEmpty()) {
+                    scopeStack.pop();
+
+                    // Volver al scope padre o global
+                    if (scopeStack.isEmpty()) {
+                        instructions = globalInstructions;
+                    } else {
+                        instructions = scopeInstructions.get(scopeStack.peek());
+                    }
+                }
+            }
         }
     }
 
@@ -690,7 +727,11 @@ public class MIPSGenerator {
      * Calcula espacio necesario para variables locales
      */
     private int calculateLocalSpace() {
-        return 64; // Simplificado
+        if (currentFunction == null) return 0;
+        Symbol funcSym = tacGenerator.getSymbol(currentFunction);
+
+        // Resultado del tamaño de todas las variables locales
+        return funcSym.getLocalVarSize();
     }
 
     /**
