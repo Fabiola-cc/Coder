@@ -16,12 +16,15 @@ str_9: .asciiz "Risky access: "
 str_10: .asciiz "Caught an error: "
 str_11: .asciiz "hugo"
 str_12: .asciiz " makes a sound."
+.align 2
+numbers: .space 24  # Array de 6 elementos
+.align 2
+matrix: .space 20  # Array de 5 elementos
 
 
 .text
 .globl main
 main:
-    # Inicialización del programa
     move    $fp, $sp
 
     li      $t0, 314
@@ -29,157 +32,164 @@ main:
     la      $t0, str_0
     move    $t2, $t0
     li      $t0, 1
-    sw      $t0, 21($sp)
+    la      $t3, numbers
+    sw      $t0, 0($t3)
     li      $t0, 2
-    sw      $t0, 25($sp)
+    la      $t3, numbers
+    sw      $t0, 4($t3)
     li      $t0, 3
-    sw      $t0, 29($sp)
+    la      $t3, numbers
+    sw      $t0, 8($t3)
     li      $t0, 4
-    sw      $t0, 33($sp)
+    la      $t3, numbers
+    sw      $t0, 12($t3)
     li      $t0, 5
-    sw      $t0, 37($sp)
+    la      $t3, numbers
+    sw      $t0, 16($t3)
     li      $t0, 1
-    sw      $t0, 53($sp)
+    la      $t4, matrix
+    sw      $t0, 0($t4)
     li      $t0, 2
-    sw      $t0, 53($sp)
+    la      $t4, matrix
+    sw      $t0, 0($t4)
     li      $t0, 3
-    sw      $t0, 57($sp)
+    la      $t4, matrix
+    sw      $t0, 4($t4)
     li      $t0, 4
-    sw      $t0, 57($sp)
-makeAdder:
-    addi    $sp, $sp, -72
-    sw      $fp, 64($sp)
-    sw      $ra, 68($sp)
-    move    $fp, $sp
-    li      $t0, 5
-    add     $t1, $t2, $t0
-    move    $v0, $t1
-    j       makeAdder_epilog
-makeAdder_epilog:
-    move    $sp, $fp
-    lw      $fp, 64($sp)
-    lw      $ra, 68($sp)
-    addi    $sp, $sp, 72
-    jr      $ra
-    li      $t1, 5
-    move    $a0, $t1
+    la      $t4, matrix
+    sw      $t0, 4($t4)
+    li      $t2, 5
+    move    $a0, $t2
     jal     makeAdder
-    move    $t1, $v0
-    move    $t0, $t1
-    la      $t1, str_1
-    add     $t3, $t1, $t0
-    move    $a0, $t3
+    move    $t2, $v0
+    move    $t1, $t2
+    la      $t2, str_1
+    add     $t0, $t2, $t1
+    move    $a0, $t0
     jal     print
-    li      $t3, 5
-    add     $t1, $t0, $t3
-    li      $t4, 0
-    beq     $t1, $t4, L1
-    la      $t3, str_2
-    move    $a0, $t3
+    li      $t2, 5
+    add     $t1, $t0, $t2
+    li      $t3, 0
+    beq     $t1, $t3, L1
+    la      $t2, str_2
+    move    $a0, $t2
     jal     print
     j       L2
 L1:
-    la      $t3, str_3
-    move    $a0, $t3
+    la      $t2, str_3
+    move    $a0, $t2
     jal     print
 L2:
 L3:
-    li      $t3, 10
-    add     $t1, $t0, $t3
-    li      $t4, 0
-    beq     $t1, $t4, L4
-    li      $t3, 1
-    add     $t5, $t0, $t3
-    move    $t0, $t5
+    li      $t2, 10
+    add     $t1, $t0, $t2
+    li      $t3, 0
+    beq     $t1, $t3, L4
+    li      $t2, 1
+    add     $t4, $t0, $t2
+    move    $t0, $t4
     j       L3
 L4:
 L5:
     la      $t1, str_4
-    add     $t5, $t1, $t0
+    add     $t4, $t1, $t0
+    move    $a0, $t4
+    jal     print
+    li      $t4, 1
+    sub     $t2, $t1, $t4
+    move    $t1, $t2
+    li      $t2, 7
+    add     $t4, $t1, $t2
+    li      $t3, 0
+    bne     $t4, $t3, L5
+L6:
+    li      $t4, 0
+    move    $t0, $t4
+L7:
+    li      $t4, 3
+    add     $t2, $t0, $t4
+    li      $t3, 0
+    beq     $t2, $t3, L8
+    la      $t4, str_5
+    add     $t5, $t4, $t0
     move    $a0, $t5
     jal     print
     li      $t5, 1
-    sub     $t3, $t1, $t5
-    move    $t1, $t3
-    li      $t3, 7
-    add     $t5, $t1, $t3
-    li      $t4, 0
-    bne     $t5, $t4, L5
-L6:
-    li      $t5, 0
-    move    $t0, $t5
-L7:
-    li      $t5, 3
-    add     $t3, $t0, $t5
-    li      $t4, 0
-    beq     $t3, $t4, L8
-    la      $t5, str_5
-    add     $t6, $t5, $t0
-    move    $a0, $t6
-    jal     print
-    li      $t6, 1
-    add     $t5, $t0, $t6
-    move    $t0, $t5
+    add     $t4, $t0, $t5
+    move    $t0, $t4
     j       L7
 L8:
-    move    $t3, $t1
-    li      $t5, 7
-    beq     $t3, $t5, L10
-    li      $t6, 6
-    beq     $t3, $t6, L11
+    move    $t2, $t1
+    li      $t4, 7
+    beq     $t2, $t4, L10
+    li      $t5, 6
+    beq     $t2, $t5, L11
     j       L12
 L10:
-    la      $t7, str_6
-    move    $a0, $t7
+    la      $t6, str_6
+    move    $a0, $t6
     jal     print
     j       L9
 L11:
-    la      $t7, str_7
-    move    $a0, $t7
+    la      $t6, str_7
+    move    $a0, $t6
     jal     print
     j       L9
 L12:
-    la      $t7, str_8
-    move    $a0, $t7
+    la      $t6, str_8
+    move    $a0, $t6
     jal     print
 L9:
     # try_begin -> catch: L13
-    li      $t7, 10
-    addi    $t5, $t7, 0
-    addi    $t5, $t5, 21
-    lw      $t6, 0($t5)
-    move    $t3, $t6
-    la      $t6, str_9
-    add     $t7, $t6, $t3
-    move    $a0, $t7
+    li      $t6, 10
+    la      $t4, numbers
+    sll     $t2, $t6, 2
+    add     $t2, $t4, $t2
+    lw      $t5, 0($t2)
+    move    $t6, $t5
+    la      $t5, str_9
+    add     $t1, $t5, $t6
+    move    $a0, $t1
     jal     print
     # try_end
     j       L14
 L13:
-    move    $t7, $t6
-    la      $t1, str_10
-    add     $t1, $t1, $t7
-    move    $a0, $t1
+    move    $t5, $t1
+    la      $t7, str_10
+    add     $t3, $t7, $t5
+    move    $a0, $t3
     jal     print
 L14:
+
+    # Fin del programa
+    li      $v0, 10
+    syscall
+
     # Class Animal
-    la      $t1, str_11
+    la      $t7, str_11
+    move    $t3, $t7
+    # end Class Animal
+
+    # Class Cat
+    # end Class Cat
+
 constructor:
-    addi    $sp, $sp, -72
-    sw      $fp, 64($sp)
-    sw      $ra, 68($sp)
+    addi    $sp, $sp, -8
+    sw      $fp, 0($sp)
+    sw      $ra, 4($sp)
     move    $fp, $sp
     move    $t0, $t1
 constructor_epilog:
     move    $sp, $fp
-    lw      $fp, 64($sp)
-    lw      $ra, 68($sp)
-    addi    $sp, $sp, 72
+    lw      $fp, 0($sp)
+    lw      $ra, 4($sp)
+    addi    $sp, $sp, 8
     jr      $ra
+
 speak:
-    addi    $sp, $sp, -72
-    sw      $fp, 64($sp)
-    sw      $ra, 68($sp)
+    addi    $sp, $sp, -8
+    sw      $fp, 0($sp)
+    sw      $ra, 4($sp)
     move    $fp, $sp
     move    $t0, $t1
     la      $t2, str_12
@@ -188,15 +198,29 @@ speak:
     j       speak_epilog
 speak_epilog:
     move    $sp, $fp
-    lw      $fp, 64($sp)
-    lw      $ra, 68($sp)
-    addi    $sp, $sp, 72
+    lw      $fp, 0($sp)
+    lw      $ra, 4($sp)
+    addi    $sp, $sp, 8
     jr      $ra
-    # end Class Animal
+
+makeAdder:
+    addi    $sp, $sp, -8
+    sw      $fp, 0($sp)
+    sw      $ra, 4($sp)
+    move    $fp, $sp
+    li      $t0, 5
+    add     $t1, $t2, $t0
+    move    $v0, $t1
+    j       makeAdder_epilog
+makeAdder_epilog:
+    move    $sp, $fp
+    lw      $fp, 0($sp)
+    lw      $ra, 4($sp)
+    addi    $sp, $sp, 8
+    jr      $ra
+
     # Class Dog
     # end Class Dog
-    # Class Cat
-    # end Class Cat
 
 print:
     addi    $sp, $sp, -4
@@ -235,7 +259,3 @@ print_newline:
     li      $v0, 4
     syscall 
     jr      $ra
-
-    # Fin del programa
-    li      $v0, 10
-    syscall

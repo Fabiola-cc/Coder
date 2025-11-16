@@ -96,16 +96,205 @@ public class MIPSGenerator {
     /**
      * Genera el segmento de datos (.data)
      */
+    /**
+     * Genera el segmento de datos (.data) - VERSIÓN CORREGIDA
+     */
     private String generateDataSegment() {
         StringBuilder data = new StringBuilder();
         data.append(".data\n");
 
-        // Agregar los datos ya existentes (de addGlobalVariables)
+        // 1. String literals del TAC
         for (Map.Entry<String, String> entry : dataSegment.entrySet()) {
             data.append(entry.getKey()).append(": ").append(entry.getValue()).append("\n");
         }
 
+        // 2. Constantes y variables globales con valores LITERALES
+        Map<String, Symbol> globalSymbols = getGlobalSymbols();
+        if (globalSymbols != null && !globalSymbols.isEmpty()) {
+            for (Symbol sym : globalSymbols.values()) {
+                // Solo CONSTANTES y VARIABLES
+                if (sym.getKind() != Symbol.Kind.VARIABLE &&
+                        sym.getKind() != Symbol.Kind.CONSTANT) {
+                    continue;
+                }
+
+                // Skip arrays (se manejan después)
+                if (isArray(sym)) {
+                    continue;
+                }
+
+                String literalValue = getLiteralInitialValue(sym);
+
+                if (literalValue != null && !literalValue.isEmpty() &&
+                        !isTemporalOrVariable(literalValue)) {
+
+                    data.append(sym.getName()).append(": ");
+
+                    String type = sym.getType() != null ? sym.getType().toLowerCase() : "integer";
+
+                    switch (type) {
+                        case "integer":
+                        case "int":
+                            try {
+                                int value = Integer.parseInt(literalValue);
+                                data.append(".word ").append(value);
+                            } catch (NumberFormatException e) {
+                                continue;
+                            }
+                            break;
+                        case "boolean":
+                        case "bool":
+                            int boolValue = literalValue.equals("true") ||
+                                    literalValue.equals("1") ? 1 : 0;
+                            data.append(".byte ").append(boolValue);
+                            break;
+                        default:
+                            continue;
+                    }
+                    data.append("\n");
+                }
+            }
+        }
+
+        // 3. Arrays globales
+        if (globalSymbols != null && !globalSymbols.isEmpty()) {
+            for (Symbol sym : globalSymbols.values()) {
+                if (sym.getKind() != Symbol.Kind.VARIABLE) {
+                    continue;
+                }
+
+                if (isArray(sym)) {
+                    int size = getArraySize(sym);
+
+                    data.append(".align 2\n");
+
+                    data.append(sym.getName()).append(": ");
+                    data.append(".space ").append(size * 4);
+                    data.append("  # Array de ").append(size).append(" elementos\n");
+                }
+            }
+        }
+
         return data.toString();
+    }
+
+    /**
+     * Obtiene el valor LITERAL inicial de un símbolo (solo constantes numéricas/booleanas)
+     */
+    private String getLiteralInitialValue(Symbol sym) {
+        // Buscar la PRIMERA asignación en el TAC para este símbolo
+        for (TACInstruction tac : tacGenerator.getInstructions()) {
+            if (tac.getOp() == TACInstruction.OpType.ASSIGN &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(sym.getName())) {
+
+                String value = tac.getArg1();
+
+                // Solo retornar si es un LITERAL (número o booleano)
+                if (value != null && !isTemporalOrVariable(value)) {
+                    // Verificar si es número
+                    try {
+                        Integer.parseInt(value);
+                        return value;
+                    } catch (NumberFormatException e) {
+                        // No es número, verificar si es booleano
+                        if (value.equals("true") || value.equals("false") ||
+                                value.equals("0") || value.equals("1")) {
+                            return value;
+                        }
+                    }
+                }
+
+                // Si es temporal o variable, NO incluirlo en .data
+                break;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Verifica si un valor es un temporal (t1, t2) o una variable
+     */
+    private boolean isTemporalOrVariable(String value) {
+        if (value == null || value.isEmpty()) {
+            return true;
+        }
+
+        // Es temporal si empieza con 't' seguido de números
+        if (value.matches("^t\\d+$")) {
+            return true;
+        }
+
+        // Es string literal si está entre comillas
+        if (value.startsWith("\"") && value.endsWith("\"")) {
+            return false;
+        }
+
+        // Es número si se puede parsear
+        try {
+            Integer.parseInt(value);
+            return false;
+        } catch (NumberFormatException e) {
+            // No es número
+        }
+
+        // Es booleano si es "true" o "false"
+        if (value.equals("true") || value.equals("false")) {
+            return false;
+        }
+
+        // Cualquier otra cosa es una variable
+        return true;
+    }
+
+    /**
+     * Obtiene los símbolos del scope global
+     */
+    private Map<String, Symbol> getGlobalSymbols() {
+        try {
+            SemanticVisitor.Entorno globalScope = tacGenerator.getScope("0");
+            if (globalScope != null) {
+                return globalScope.getSymbolsLocal();
+            }
+        } catch (Exception e) {
+            System.err.println("Error obteniendo símbolos globales: " + e.getMessage());
+        }
+        return new HashMap<>();
+    }
+
+    /**
+     * Verifica si un símbolo es un array
+     */
+    private boolean isArray(Symbol sym) {
+        return sym.getType() != null && sym.getType().endsWith("[]");
+    }
+
+    /**
+     * Obtiene el tamaño total de un array desde Symbol
+     */
+    private int getArraySize(Symbol sym) {
+        // Calcular desde el size del símbolo
+        int totalSize = sym.getSize();
+
+        // Si es integer[], cada elemento es 4 bytes
+        // Si es integer[][], depende de las dimensiones
+        String baseType = sym.getType().replace("[]", "");
+        int elementSize = 4; // Por defecto
+
+        if (baseType.equals("integer")) {
+            elementSize = 4;
+        } else if (baseType.equals("string")) {
+            elementSize = 8;
+        } else if (baseType.equals("boolean")) {
+            elementSize = 1;
+        }
+
+        // Calcular número de elementos
+        int elements = totalSize / elementSize;
+        if (elements == 0) elements = 10; // Default si no se puede calcular
+
+        return elements;
     }
 
     /**
@@ -322,6 +511,11 @@ public class MIPSGenerator {
     /**
      * Carga desde array: dest = arr[idx]
      */
+    /**
+     * Genera código MIPS para cargar dest = arr[index]
+     * arrayAccess: "numbers[10]" o "matrix[i]"
+     * dest: nombre de la variable destino (puede ser temporal)
+     */
     private void generateArrayLoad(String dest, String arrayAccess) {
         int openBracket = arrayAccess.indexOf('[');
         int closeBracket = arrayAccess.indexOf(']');
@@ -337,29 +531,82 @@ public class MIPSGenerator {
             return;
         }
 
-        int baseOffset = arraySym.getOffset();
+        // Registro destino
         String destReg = allocator.getReg(dest);
 
-        // Si índice es constante
+        // Registro base para la dirección del array
+        String baseReg = allocator.getReg("__arr_base_" + arrayName);
+        int baseOffset = arraySym.getOffset();
+
+        // 1) Obtener dirección base según sea local o global
+        if (arraySym.isLocal()) {
+            // LOCAL -> base = $fp + offset
+            instructions.add(MIPSInstruction.typeI(
+                    MIPSInstruction.OpCode.ADDI,
+                    baseReg,
+                    "$fp",
+                    baseOffset
+            ));
+        } else {
+            // GLOBAL -> la base (label)
+            instructions.add(MIPSInstruction.la(
+                    baseReg,
+                    arraySym.getTacAddress()
+            ));
+        }
+
+        // 2) Índice inmediato
         if (isImmediate(index)) {
             int idx = Integer.parseInt(index);
-            int offset = baseOffset + (idx * 4);
-            instructions.add(MIPSInstruction.loadStore(OpCode.LW, destReg, offset + "($sp)"));
-        } else {
-            // Índice es variable: calcular dirección
-            String indexReg = allocator.getReg(index);
-            String addrReg = allocator.getReg("temp_addr");
+            int offset = idx * 4; // suponiendo elementSize = 4
 
-            // addr = baseOffset + index * 4
-            instructions.add(MIPSInstruction.typeI(OpCode.ADDI, addrReg, indexReg, 0));
-            instructions.add(MIPSInstruction.typeI(OpCode.ADDI, addrReg, addrReg, baseOffset));
-            instructions.add(MIPSInstruction.loadStore(OpCode.LW, destReg, "0(" + addrReg + ")"));
+            // lw destReg, offset(baseReg)
+            instructions.add(MIPSInstruction.loadStore(
+                    MIPSInstruction.OpCode.LW,
+                    destReg,
+                    offset + "(" + baseReg + ")"
+            ));
 
-            allocator.freeRegister(addrReg);
+            allocator.freeRegister(baseReg);
+            allocator.markDirty(destReg);
+            return;
         }
+
+        // 3) Índice en registro
+        String indexReg = allocator.getReg(index);
+        String addrReg  = allocator.getReg("__arr_addr_" + arrayName);
+
+        // offset = index * 4  -> sll addrReg, indexReg, 2
+        instructions.add(MIPSInstruction.typeR(
+                MIPSInstruction.OpCode.SLL,
+                addrReg,    // rd
+                indexReg,   // rs (we pass indexReg here)
+                "2"         // rt (shamt as string, matches your typeR usage)
+        ));
+
+        // addrReg = baseReg + offset  -> add addrReg, baseReg, addrReg
+        instructions.add(MIPSInstruction.typeR(
+                MIPSInstruction.OpCode.ADD,
+                addrReg,
+                baseReg,
+                addrReg
+        ));
+
+        // lw destReg, 0(addrReg)
+        instructions.add(MIPSInstruction.loadStore(
+                MIPSInstruction.OpCode.LW,
+                destReg,
+                "0(" + addrReg + ")"
+        ));
+
+        // liberar temporales usados
+        allocator.freeRegister(indexReg);
+        allocator.freeRegister(addrReg);
+        allocator.freeRegister(baseReg);
 
         allocator.markDirty(destReg);
     }
+
 
     /**
      * Almacena en array: arr[idx] = src
@@ -379,23 +626,85 @@ public class MIPSGenerator {
             return;
         }
 
-        int baseOffset = arraySym.getOffset();
         String srcReg = allocator.getReg(src);
 
+        // === Base del array (registro) ===
+        String baseReg = allocator.getReg("__arr_base_" + arrayName);
+
+        int baseOffset = arraySym.getOffset();
+
+        // ==================================================
+        // 1. Obtener dirección base (local: FP+offset, global: la)
+        // ==================================================
+        if (arraySym.isLocal()) {
+            // LOCAL: base = $fp + offset
+            instructions.add(MIPSInstruction.typeI(
+                    MIPSInstruction.OpCode.ADDI,
+                    baseReg,
+                    "$fp",
+                    baseOffset
+            ));
+        } else {
+            // GLOBAL: base = dirección global (label)
+            instructions.add(MIPSInstruction.la(
+                    baseReg,
+                    arraySym.getTacAddress()
+            ));
+        }
+
+        // ==================================================
+        // 2. Caso índice inmediato
+        // ==================================================
         if (isImmediate(index)) {
             int idx = Integer.parseInt(index);
-            int offset = baseOffset + (idx * 4);
-            instructions.add(MIPSInstruction.loadStore(OpCode.SW, srcReg, offset + "($sp)"));
-        } else {
-            String indexReg = allocator.getReg(index);
-            String addrReg = allocator.getReg("temp_addr");
+            int offset = idx * 4;
 
-            instructions.add(MIPSInstruction.typeI(OpCode.ADDI, addrReg, indexReg, baseOffset));
-            instructions.add(MIPSInstruction.loadStore(OpCode.SW, srcReg, "0(" + addrReg + ")"));
+            instructions.add(MIPSInstruction.loadStore(
+                    MIPSInstruction.OpCode.SW,
+                    srcReg,
+                    offset + "(" + baseReg + ")"
+            ));
 
-            allocator.freeRegister(addrReg);
+            allocator.freeRegister(baseReg);
+            return;
         }
+
+        // ==================================================
+        // 3. Caso índice en registro
+        // ==================================================
+        String indexReg = allocator.getReg(index);
+        String addrReg  = allocator.getReg("__arr_addr_" + arrayName);
+
+        // offset = index * 4   →  sll addrReg, indexReg, 2
+        instructions.add(MIPSInstruction.typeR(
+                MIPSInstruction.OpCode.SLL,
+                addrReg,      // rd
+                indexReg,     // rt (realmente es rt)
+                "2"           // shamt
+        ));
+
+        // addrReg = base + offset → add addrReg, baseReg, addrReg
+        instructions.add(MIPSInstruction.typeR(
+                MIPSInstruction.OpCode.ADD,
+                addrReg,
+                baseReg,
+                addrReg
+        ));
+
+        // Guardar valor: sw srcReg, 0(addrReg)
+        instructions.add(MIPSInstruction.loadStore(
+                MIPSInstruction.OpCode.SW,
+                srcReg,
+                "0(" + addrReg + ")"
+        ));
+
+        allocator.freeRegister(indexReg);
+        allocator.freeRegister(addrReg);
+        allocator.freeRegister(baseReg);
     }
+
+
+
 
     /**
      * Genera operaciones aritméticas: x = y op z

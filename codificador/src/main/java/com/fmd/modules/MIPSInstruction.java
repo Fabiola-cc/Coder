@@ -33,6 +33,9 @@ public class MIPSInstruction {
         NOR,    // nor $rd, $rs, $rt
         NOT,    // not $rd, $rs (pseudo: nor $rd, $rs, $zero)
 
+        // Shifts
+        SLL,   // sll $rd, $rt, shamt
+
         // Memoria
         LW,     // lw $rt, offset($rs)
         SW,     // sw $rt, offset($rs)
@@ -280,6 +283,9 @@ public class MIPSInstruction {
             // Tipo R: add $rd, $rs, $rt
             case ADD: case SUB: case MUL: case AND: case OR: case XOR: case NOR:
             case SLT: case SEQ: case SNE: case SGT: case SGE: case SLE:
+                sb.append(rd).append(", ").append(rs).append(", ").append(rt);
+                break;
+            case SLL:
                 sb.append(rd).append(", ").append(rs).append(", ").append(rt);
                 break;
 
