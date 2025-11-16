@@ -104,27 +104,41 @@ public class MIPSGenerator {
      * Genera el segmento de texto (.text)
      */
     private String generateTextSegment() {
-        StringBuilder text = new StringBuilder();
-        text.append("\n.text\n");
-        text.append(".globl main\n");
-        text.append("main:\n");
-        text.append("    # Inicialización del programa\n");
-        text.append("    move    $fp, $sp\n\n");
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n.text\n");
+        sb.append(".globl main\n");
+        sb.append("main:\n");
+        sb.append("    # Inicialización del programa\n");
+        sb.append("    move    $fp, $sp\n\n");
 
-        // Agregar todas las instrucciones generadas
+        // Generar código del programa principal
         for (MIPSInstruction instr : instructions) {
-            text.append(instr.toString()).append("\n");
+            sb.append(instr.toString()).append("\n");
         }
 
+        sb.append("\n");
+
+        // Crear lista temporal para las funciones runtime
+        List<MIPSInstruction> tempInstructions = new ArrayList<>(instructions);
+        instructions = new ArrayList<>();
+
+        generateRuntimeFunctions();
+
+        // Agregar las funciones runtime generadas
+        for (MIPSInstruction instr : instructions) {
+            sb.append(instr.toString()).append("\n");
+        }
+
+        // Restaurar instrucciones originales
+        instructions = tempInstructions;
+
         // Exit del programa
-        text.append("\n");
-        text.append("    # Fin del programa\n");
-        text.append("    li      $v0, 10\n");
-        text.append("    syscall\n");
+        sb.append("\n    # Fin del programa\n");
+        sb.append("    li      $v0, 10\n");
+        sb.append("    syscall\n");
 
-        return text.toString();
+        return sb.toString();
     }
-
     /**
      * Genera todas las instrucciones MIPS
      */
@@ -445,6 +459,44 @@ public class MIPSGenerator {
         String functionName = tac.getArg1();
         List<String> params = tac.getParams();
 
+        if (functionName.equals("print") && !params.isEmpty()) {
+            String param = params.get(0);
+            String paramReg = allocator.getReg(param);
+
+            // Mover parámetro a $a0
+            instructions.add(MIPSInstruction.move("$a0", paramReg));
+
+            // Intentar detectar el tipo
+            Symbol paramSym = tacGenerator.getSymbol(param);
+            if (paramSym != null && paramSym.getType() != null) {
+                String type = paramSym.getType();
+
+                if (type.equals("integer")) {
+                    // Print directo de entero
+                    instructions.add(MIPSInstruction.li("$v0", 1));
+                    instructions.add(MIPSInstruction.syscall());
+                    return;
+                } else if (type.equals("string")) {
+                    // Print directo de string
+                    instructions.add(MIPSInstruction.li("$v0", 4));
+                    instructions.add(MIPSInstruction.syscall());
+                    return;
+                }
+            }
+
+            // Si no sabemos el tipo, llamar a print genérica
+            allocator.saveTemporaries();
+            instructions.add(MIPSInstruction.jump(OpCode.JAL, "print"));
+            return;
+        }
+
+        if (functionName.equals("read") || functionName.equals("read_int")) {
+            allocator.saveTemporaries();
+            instructions.add(MIPSInstruction.jump(OpCode.JAL, "read_int"));
+            return;
+        }
+
+        // Para otras funciones, comportamiento normal
         generateParameters(params);
         allocator.saveTemporaries();
         instructions.add(MIPSInstruction.jump(OpCode.JAL, functionName));
@@ -672,7 +724,84 @@ public class MIPSGenerator {
         allocator.printState();
         return count;
     }
+    private void generatePrintBoolFunction() {
+        instructions.add(MIPSInstruction.label("print_bool"));
 
+        // Si $a0 == 0, imprimir "false"
+        instructions.add(MIPSInstruction.branch(OpCode.BEQ, "$a0", "$zero", "print_bool_false"));
+
+        // Imprimir "true"
+        instructions.add(MIPSInstruction.la("$a0", "true_str"));
+        instructions.add(MIPSInstruction.li("$v0", 4));
+        instructions.add(MIPSInstruction.syscall());
+        instructions.add(MIPSInstruction.jump(OpCode.J, "print_bool_end"));
+
+        // Imprimir "false"
+        instructions.add(MIPSInstruction.label("print_bool_false"));
+        instructions.add(MIPSInstruction.la("$a0", "false_str"));
+        instructions.add(MIPSInstruction.li("$v0", 4));
+        instructions.add(MIPSInstruction.syscall());
+
+        instructions.add(MIPSInstruction.label("print_bool_end"));
+        instructions.add(MIPSInstruction.jumpReg("$ra"));
+    }
+// ============================================
+// RUNTIME FUNCTIONS - AGREGAR AL FINAL DE LA CLASE
+// ============================================
+
+    /**
+     * Genera todas las funciones de runtime (LLAMAR desde generate())
+     */
+    private void generateRuntimeFunctions() {
+        generatePrintFunction();
+        generateReadIntFunction();
+        generatePrintBoolFunction();
+        generatePrintNewlineFunction();
+    }
+
+    private void generatePrintFunction() {
+        instructions.add(MIPSInstruction.label("print"));
+
+        // Guardar $ra
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$sp", "$sp", -4));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$ra", "0($sp)"));
+
+        // Detectar si es puntero (string) o valor (int)
+        instructions.add(MIPSInstruction.li("$t9", 0x10000000));
+        instructions.add(MIPSInstruction.branch(OpCode.BGE, "$a0", "$t9", "print_as_string"));
+
+        // Imprimir como int
+        instructions.add(MIPSInstruction.label("print_as_int"));
+        instructions.add(MIPSInstruction.li("$v0", 1));
+        instructions.add(MIPSInstruction.syscall());
+        instructions.add(MIPSInstruction.jump(OpCode.J, "print_end"));
+
+        // Imprimir como string
+        instructions.add(MIPSInstruction.label("print_as_string"));
+        instructions.add(MIPSInstruction.li("$v0", 4));
+        instructions.add(MIPSInstruction.syscall());
+
+        // Restaurar y retornar
+        instructions.add(MIPSInstruction.label("print_end"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, "$ra", "0($sp)"));
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$sp", "$sp", 4));
+        instructions.add(MIPSInstruction.jumpReg("$ra"));
+    }
+
+    private void generateReadIntFunction() {
+        instructions.add(MIPSInstruction.label("read_int"));
+        instructions.add(MIPSInstruction.li("$v0", 5));
+        instructions.add(MIPSInstruction.syscall());
+        instructions.add(MIPSInstruction.jumpReg("$ra"));
+    }
+
+    private void generatePrintNewlineFunction() {
+        instructions.add(MIPSInstruction.label("print_newline"));
+        instructions.add(MIPSInstruction.la("$a0", "newline"));
+        instructions.add(MIPSInstruction.li("$v0", 4));
+        instructions.add(MIPSInstruction.syscall());
+        instructions.add(MIPSInstruction.jumpReg("$ra"));
+    }
     /**
      * Agrega variables globales al segmento de datos
      */

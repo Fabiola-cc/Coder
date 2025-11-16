@@ -198,6 +198,44 @@ speak_epilog:
     # Class Cat
     # end Class Cat
 
+print:
+    addi    $sp, $sp, -4
+    sw      $ra, 0($sp)
+    li      $t9, 268435456
+    bge     $a0, $t9, print_as_string
+print_as_int:
+    li      $v0, 1
+    syscall 
+    j       print_end
+print_as_string:
+    li      $v0, 4
+    syscall 
+print_end:
+    lw      $ra, 0($sp)
+    addi    $sp, $sp, 4
+    jr      $ra
+read_int:
+    li      $v0, 5
+    syscall 
+    jr      $ra
+print_bool:
+    beq     $a0, $zero, print_bool_false
+    la      $a0, true_str
+    li      $v0, 4
+    syscall 
+    j       print_bool_end
+print_bool_false:
+    la      $a0, false_str
+    li      $v0, 4
+    syscall 
+print_bool_end:
+    jr      $ra
+print_newline:
+    la      $a0, newline
+    li      $v0, 4
+    syscall 
+    jr      $ra
+
     # Fin del programa
     li      $v0, 10
     syscall
