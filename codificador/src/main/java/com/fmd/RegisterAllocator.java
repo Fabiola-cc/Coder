@@ -57,7 +57,7 @@ public class RegisterAllocator {
         this.currentLine = 0;
         this.instructions = new ArrayList<>();
         this.tempOffsets = new HashMap<>();
-        this.nextTempOffset = 1000; // Empezar en offset 1000 para temporales
+        this.nextTempOffset = 1000;
 
         // Inicializar registros temporales como libres
         for (int i = TEMP_REGISTERS.length - 1; i >= 0; i--) {
@@ -113,27 +113,39 @@ public class RegisterAllocator {
     private void assignRegister(String variable, String register) {
         RegisterDescriptor desc = registerState.get(register);
         desc.assign(variable);
+        desc.setDirty();
         variableToRegister.put(variable, register);
         lastUse.put(variable, currentLine);
     }
+
 
     /**
      * Libera un registro (lo marca como disponible)
      */
     public void freeRegister(String register) {
         RegisterDescriptor desc = registerState.get(register);
-        if (desc != null && desc.getVariable() != null) {
-            // Si está dirty, hacer spill antes de liberar
+        if (desc == null) {
+            if (!freeRegisters.contains(register)) freeRegisters.push(register);
+            return;
+        }
+        String var = desc.getVariable();
+        if (var != null) {
             if (desc.isDirty()) {
+                // spillRegister liberará y pondrá el registro en freeRegisters
                 spillRegister(register);
+                return;
             } else {
-                // Solo limpiar sin spill
-                variableToRegister.remove(desc.getVariable());
+                variableToRegister.remove(var);
                 desc.free();
-                freeRegisters.push(register);
+                if (!freeRegisters.contains(register)) freeRegisters.push(register);
             }
+        } else {
+            // ya libre
+            desc.free();
+            if (!freeRegisters.contains(register)) freeRegisters.push(register);
         }
     }
+
 
     // ============================================
     // SPILLING (DESALOJO A MEMORIA)
@@ -144,59 +156,97 @@ public class RegisterAllocator {
      */
     private void spillRegister(String register) {
         RegisterDescriptor desc = registerState.get(register);
+        if (desc == null || desc.getVariable() == null) {
+            // nada que hacer
+            desc = (desc == null) ? new RegisterDescriptor(register) : desc;
+            desc.free();
+            if (!freeRegisters.contains(register)) freeRegisters.push(register);
+            return;
+        }
 
-        if (desc.isDirty()) {
-            String variable = desc.getVariable();
-            int offset = getVariableOffset(variable);
+        String variable = desc.getVariable();
+        int offset = getVariableOffset(variable);
 
+        if (offset < 0) {
+            // No podemos spilled una literal o variable sin offset válido.
+            System.out.println("[INFO] No se genera spill para '" + variable + "' (no requiere offset).");
+            return;
+        } else {
             // Generar instrucción MIPS: sw $reg, offset($sp)
             MIPSInstruction store = MIPSInstruction.loadStore(
                     MIPSInstruction.OpCode.SW,
                     register,
                     offset + "($sp)"
             );
-
             instructions.add(store);
-
             System.out.println("  [SPILL] " + variable + " -> memoria (offset " + offset + ")");
         }
 
-        // Liberar el registro
-        variableToRegister.remove(desc.getVariable());
+        // Liberar el registro (asegurar consistencia)
+        variableToRegister.remove(variable);
         desc.free();
+        if (!freeRegisters.contains(register)) freeRegisters.push(register);
     }
+
+    private boolean needsStackSlot(String var) {
+        if (var == null) return false;
+
+        // Strings literales
+        if (var.startsWith("\"") && var.endsWith("\""))
+            return false;
+
+        // Literales numéricos
+        if (var.matches("\\d+"))
+            return false;
+
+        // Accesos a arreglo con índice variable
+        if (var.matches(".*\\[.*\\].*"))
+            return false;
+
+        // Campos de objeto
+        if (var.startsWith("this."))
+            return false;
+
+        // Variables de excepción
+        if (var.equals("exception") || var.equals("err"))
+            return false;
+
+        // Si no cae en lo anterior → sí necesita offset
+        return true;
+    }
+
+
 
     /**
      * Selecciona registro víctima para desalojar
      * Estrategia: Furthest Use (el que se usa más lejos en el futuro)
      */
     private String selectVictim() {
-        String victim = null;
-        int maxDistance = -1;
-
-        // Buscar el registro cuya variable se usa más lejos
+        // Priorizar temporales (t#) ya en registers
         for (String reg : TEMP_REGISTERS) {
             RegisterDescriptor desc = registerState.get(reg);
-            if (desc.getVariable() != null) {
+            if (desc != null && desc.getVariable() != null && desc.getVariable().startsWith("t")) {
+                return reg;
+            }
+        }
+
+        String victim = null;
+        int maxAge = -1;
+        for (String reg : TEMP_REGISTERS) {
+            RegisterDescriptor desc = registerState.get(reg);
+            if (desc != null && desc.getVariable() != null) {
                 String var = desc.getVariable();
-
-                // Si es temporal (t1, t2...), priorizar para spill
-                if (var.startsWith("t")) {
-                    return reg;
-                }
-
-                // Calcular distancia al próximo uso
-                int distance = getNextUse(var);
-                if (distance > maxDistance) {
-                    maxDistance = distance;
+                Integer last = lastUse.get(var);
+                int age = (last == null) ? Integer.MAX_VALUE : currentLine - last;
+                if (age > maxAge) {
+                    maxAge = age;
                     victim = reg;
                 }
             }
         }
-
-        // Si no encontró víctima, usar el primero disponible
         return victim != null ? victim : TEMP_REGISTERS[0];
     }
+
 
     /**
      * Estima cuándo se usará una variable de nuevo
@@ -216,65 +266,86 @@ public class RegisterAllocator {
      * Usa la tabla de símbolos del TAC que ya tiene los offsets calculados
      */
     private int getVariableOffset(String variable) {
-        // 1. Si es temporal (t1, t2...), asignar offset dinámico en el stack
-        if (variable.startsWith("t") && variable.length() > 1
-                && Character.isDigit(variable.charAt(1))) {
+        if (variable == null) return -1;
 
-            // Usar un mapa temporal para offsets dinámicos
+        // 1. Literales de cadena: no deben pedirse offsets
+        if (variable.startsWith("\"") && variable.endsWith("\"")) {
+            return -1;
+        }
+
+        // 2. Temporales t<number>
+        if (variable.matches("^t\\d+$")) {
             if (!tempOffsets.containsKey(variable)) {
                 tempOffsets.put(variable, nextTempOffset);
-                nextTempOffset += 4; // siguiente offset (4 bytes por int)
+                nextTempOffset += 4;
             }
             return tempOffsets.get(variable);
         }
 
-        // 2. Si es string literal, NO debería llegar aquí
-        if (variable.startsWith("\"")) {
-            System.err.println("ERROR: String literal '" + variable + "' no debe necesitar offset");
+        // 3. Acceso a array como name[CONST]
+        if (variable.contains("[")) {
+            int idxOpen = variable.indexOf('[');
+            int idxClose = variable.indexOf(']');
+            if (idxClose > idxOpen) {
+                String baseName = variable.substring(0, idxOpen);
+                String indexPart = variable.substring(idxOpen + 1, idxClose).trim();
+
+                Symbol baseSym = tacGenerator.getSymbol(baseName);
+                if (baseSym == null) {
+                    System.err.println("WARNING: Array base '" + baseName + "' no encontrada en tabla de símbolos");
+                    return -1;
+                }
+                int baseOffset = baseSym.getOffset();
+                // índice constante
+                try {
+                    int idx = Integer.parseInt(indexPart);
+                    return baseOffset + idx * 4; // asumiendo 4 bytes por elemento
+                } catch (NumberFormatException e) {
+                    // índice no constante (p. ej. numbers[t2]) -> devolvemos baseOffset para que el código calcule dirección efectiva
+                    System.err.println("WARNING: Index no constante en '" + variable + "'. Devolveré base (" + baseOffset + "), requiere cálculo de dirección.");
+                    return baseOffset;
+                }
+            }
             return -1;
         }
 
-        // 3. Si es acceso a array (numbers[0], numbers[t54]), parsear base
-        if (variable.contains("[")) {
-            String baseName = variable.substring(0, variable.indexOf('['));
-            Symbol sym = tacGenerator.getSymbol(baseName);
-            if (sym != null && sym.getOffset() >= 0) {
-                return sym.getOffset();
-            }
-            // Si no encuentra la base, podría ser un temporal con array
-            System.err.println("WARNING: Array access '" + variable + "' sin offset de base");
-            return 0;
-        }
-
-        // 4. Si es acceso a miembro (this.name), parsear
+        // 4. Acceso a miembro this.name (o obj.member)
         if (variable.contains(".")) {
             String[] parts = variable.split("\\.");
             if (parts.length == 2) {
-                Symbol sym = tacGenerator.getSymbol(parts[1]); // nombre del miembro
+                String owner = parts[0];
+                String member = parts[1];
+                // Intentar buscar símbolo calificado en tabla (checar si tacGenerator tiene soporte)
+                Symbol sym = tacGenerator.getSymbol(member);
                 if (sym != null && sym.getOffset() >= 0) {
                     return sym.getOffset();
+                } else {
+                    return -1;
                 }
             }
-            System.err.println("WARNING: Member access '" + variable + "' sin offset");
-            return 0;
+            return -1;
         }
 
-        // 5. Variable normal del programa
+        // 5. Variable normal
         Symbol sym = tacGenerator.getSymbol(variable);
         if (sym != null && sym.getOffset() >= 0) {
             return sym.getOffset();
         }
 
-        // 6. Si no se encuentra, advertencia
-        System.err.println("WARNING: Variable '" + variable + "' sin offset, usando 0");
-        return 0;
+        // 6. No encontrada -> advertencia
+        return -1;
     }
+
 
     /**
      * Carga una variable de memoria a registro
      */
     public void loadVariable(String variable, String register) {
         int offset = getVariableOffset(variable);
+        if (offset < 0) {
+            System.err.println("ERROR: Intento de cargar '" + variable + "' con offset inválido (" + offset + "). Operación omitida.");
+            return;
+        }
 
         MIPSInstruction load = MIPSInstruction.loadStore(
                 MIPSInstruction.OpCode.LW,
@@ -291,11 +362,12 @@ public class RegisterAllocator {
         variableToRegister.put(variable, register);
     }
 
-    /**
-     * Guarda un registro en memoria
-     */
     public void storeVariable(String register, String variable) {
         int offset = getVariableOffset(variable);
+        if (offset < 0) {
+            System.err.println("ERROR: Intento de guardar '" + variable + "' con offset inválido (" + offset + "). Operación omitida.");
+            return;
+        }
 
         MIPSInstruction store = MIPSInstruction.loadStore(
                 MIPSInstruction.OpCode.SW,
@@ -306,8 +378,9 @@ public class RegisterAllocator {
 
         // Marcar como limpio (ya sincronizado con memoria)
         RegisterDescriptor desc = registerState.get(register);
-        desc.setClean();
+        if (desc != null) desc.setClean();
     }
+
 
     // ============================================
     // DIRTY BIT MANAGEMENT

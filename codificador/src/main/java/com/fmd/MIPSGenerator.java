@@ -95,7 +95,16 @@ public class MIPSGenerator {
                 generateUnary(tac);
                 break;
 
+            case LABEL_FUNCTION:
+                generateFunctionProlog(tac);
+                break;
+
+            case LABEL_CLASS:
+                instructions.add(MIPSInstruction.comment("Class " + tac.getLabel()));
+                break;
+
             case LABEL:
+                // L1, L2, loops, etc.
                 generateLabel(tac);
                 break;
 
@@ -379,51 +388,57 @@ public class MIPSGenerator {
      * Genera prólogo de función usando Register constantes
      */
     private void generateFunctionProlog(TACInstruction tac) {
-        // Este método puede no ser necesario si usas LABEL para marcar funciones
         String functionName = tac.getLabel();
         currentFunction = functionName;
 
         instructions.add(MIPSInstruction.label(functionName));
 
-        // Guardar $ra y $fp usando Register constantes
-        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, Register.SP.getName(), Register.SP.getName(), -8));
-        instructions.add(MIPSInstruction.loadStore(OpCode.SW, Register.RA.getName(), "4(" + Register.SP.getName() + ")"));
-        instructions.add(MIPSInstruction.loadStore(OpCode.SW, Register.FP.getName(), "0(" + Register.SP.getName() + ")"));
+        // Tamaño total del frame
+        int localSpace = calculateLocalSpace();
+        int frameSize = 8 + localSpace;
+
+        // Reservar todo el frame de una sola vez
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, Register.SP.getName(), Register.SP.getName(), -frameSize));
+
+        // Guardar FP y RA en las posiciones estándar
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, Register.FP.getName(),  (frameSize - 8) + "(" + Register.SP.getName() + ")"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, Register.RA.getName(),  (frameSize - 4) + "(" + Register.SP.getName() + ")"));
+
+        // Nuevo frame pointer
         instructions.add(MIPSInstruction.move(Register.FP.getName(), Register.SP.getName()));
 
-        // Reservar espacio para variables locales
-        int localSpace = calculateLocalSpace();
-        if (localSpace > 0) {
-            instructions.add(MIPSInstruction.typeI(OpCode.ADDI, Register.SP.getName(), Register.SP.getName(), -localSpace));
-        }
-
-        // Reiniciar allocator para nueva función
+        // Reset del allocator
         allocator.reset();
     }
+
 
     /**
      * Genera epílogo de función usando Register constantes
      */
     private void generateFunctionEpilog(TACInstruction tac) {
         String functionName = tac.getLabel();
-        String epilogLabel = functionName + "_epilog";
+        instructions.add(MIPSInstruction.label(functionName + "_epilog"));
 
-        instructions.add(MIPSInstruction.label(epilogLabel));
+        int localSpace = calculateLocalSpace();
+        int frameSize = 8 + localSpace;
 
-        // Sincronizar registros dirty antes de salir
+        // Flush de los registros / spills
         allocator.flushAll();
 
-        // Liberar espacio de variables locales usando Register constantes
+        // Restaurar SP = FP
         instructions.add(MIPSInstruction.move(Register.SP.getName(), Register.FP.getName()));
 
-        // Restaurar $fp y $ra
-        instructions.add(MIPSInstruction.loadStore(OpCode.LW, Register.FP.getName(), "0(" + Register.SP.getName() + ")"));
-        instructions.add(MIPSInstruction.loadStore(OpCode.LW, Register.RA.getName(), "4(" + Register.SP.getName() + ")"));
-        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, Register.SP.getName(), Register.SP.getName(), 8));
+        // Restaurar FP y RA
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, Register.FP.getName(),  (frameSize - 8) + "(" + Register.SP.getName() + ")"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, Register.RA.getName(),  (frameSize - 4) + "(" + Register.SP.getName() + ")"));
 
-        // Retornar usando Register.RA
+        // Liberar frame completo
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, Register.SP.getName(), Register.SP.getName(), frameSize));
+
+        // Regresar
         instructions.add(MIPSInstruction.jumpReg(Register.RA.getName()));
     }
+
 
     /**
      * Genera inicio de bloque try
