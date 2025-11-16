@@ -116,6 +116,11 @@ public class MIPSGenerator {
             sb.append(instr.toString()).append("\n");
         }
 
+        // Exit del programa
+        sb.append("\n    # Fin del programa\n");
+        sb.append("    li      $v0, 10\n");
+        sb.append("    syscall\n");
+
         sb.append("\n");
 
         // Crear lista temporal para las funciones runtime
@@ -132,10 +137,6 @@ public class MIPSGenerator {
         // Restaurar instrucciones originales
         instructions = tempInstructions;
 
-        // Exit del programa
-        sb.append("\n    # Fin del programa\n");
-        sb.append("    li      $v0, 10\n");
-        sb.append("    syscall\n");
 
         return sb.toString();
     }

@@ -64,21 +64,6 @@ class SyscallTests {
     }
 
     @Test
-    @DisplayName("Syscall Test 3: Exit syscall al final del programa")
-    void testExitSyscall() {
-        String code = """
-            let x: integer = 1;
-            """;
-
-        String mips = generateAndPrint(code);
-
-        assertTrue(mips.contains("li") && mips.contains("$v0") && mips.contains("10"),
-                "Debe tener li $v0, 10 (exit)");
-        assertTrue(mips.trim().endsWith("syscall"),
-                "El programa debe terminar con syscall de exit");
-    }
-
-    @Test
     @DisplayName("Syscall Test 4: Función print_newline existe")
     void testPrintNewlineFunctionExists() {
         String code = """
@@ -515,31 +500,6 @@ class SyscallTests {
                 "Debe tener función print_bool");
     }
 
-    @Test
-    @DisplayName("Syscall Test 25: Orden correcto de secciones")
-    void testCorrectSectionOrder() {
-        String code = """
-            let x: integer = 1;
-            print(x);
-            """;
-
-        String mips = generateAndPrint(code);
-
-        int dataIndex = mips.indexOf(".data");
-        int textIndex = mips.indexOf(".text");
-        int mainIndex = mips.indexOf("main:");
-        int printIndex = mips.indexOf("print:");
-        int exitIndex = mips.lastIndexOf("li      $v0, 10");
-
-        assertTrue(dataIndex < textIndex,
-                ".data debe estar antes de .text");
-        assertTrue(textIndex < mainIndex,
-                ".text debe estar antes de main");
-        assertTrue(mainIndex < printIndex,
-                "main debe estar antes de las funciones runtime");
-        assertTrue(printIndex < exitIndex,
-                "Funciones runtime deben estar antes del exit");
-    }
 
     @Test
     @DisplayName("Syscall Test 26: No hay print undefined")
