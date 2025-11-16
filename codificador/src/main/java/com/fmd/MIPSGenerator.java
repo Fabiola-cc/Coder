@@ -5,23 +5,36 @@ import com.fmd.modules.TACInstruction;
 import com.fmd.modules.MIPSInstruction;
 import com.fmd.modules.MIPSInstruction.OpCode;
 import com.fmd.modules.Register;
+import com.fmd.modules.Symbol;
 
 /**
- * Generador de código MIPS a partir de código intermedio (Three-Address Code)
- * Actualizado para usar objetos Register
+ * Generador de código MIPS MEJORADO
+ *
+ * MEJORAS sobre la versión original:
+ * - Manejo de string literals en segmento de datos
+ * - Eliminación de instrucciones redundantes (move $t0, $t0)
+ * - Mejor manejo de acceso a arrays
+ * - Segmento de datos más completo
+ * - Inicialización y finalización del programa
  */
 public class MIPSGenerator {
     private RegisterAllocator allocator;
     private List<MIPSInstruction> instructions;
     private Map<String, String> dataSegment;
+    private Map<String, String> stringLiterals; // Mapea literales a labels
     private int labelCounter;
+    private int stringCounter;
     private String currentFunction;
+    private TACGenerator tacGenerator;
 
     public MIPSGenerator(TACGenerator tacGenerator) {
+        this.tacGenerator = tacGenerator;
         this.allocator = new RegisterAllocator(tacGenerator);
         this.instructions = new ArrayList<>();
-        this.dataSegment = new HashMap<>();
+        this.dataSegment = new LinkedHashMap<>();
+        this.stringLiterals = new HashMap<>();
         this.labelCounter = 0;
+        this.stringCounter = 0;
         this.currentFunction = null;
     }
 
@@ -29,16 +42,47 @@ public class MIPSGenerator {
      * Genera código MIPS completo
      */
     public String generate(List<TACInstruction> tacList) {
-        StringBuilder code = new StringBuilder();
+        // PASO 1: Pre-procesar para encontrar string literals
+        extractStringLiterals(tacList);
 
-        // Generar segmento de datos
+        // PASO 2: Generar instrucciones MIPS
+        generateInstructions(tacList);
+
+        // PASO 3: Ensamblar código completo
+        StringBuilder code = new StringBuilder();
         code.append(generateDataSegment());
         code.append("\n");
-
-        // Generar segmento de texto
-        code.append(generateTextSegment(tacList));
+        code.append(generateTextSegment());
 
         return code.toString();
+    }
+
+    /**
+     * Extrae todos los string literals del TAC para ponerlos en .data
+     */
+    private void extractStringLiterals(List<TACInstruction> tacList) {
+        for (TACInstruction tac : tacList) {
+            checkAndAddString(tac.getArg1());
+            checkAndAddString(tac.getArg2());
+            checkAndAddString(tac.getResult());
+        }
+    }
+
+    private void checkAndAddString(String value) {
+        if (value != null && value.startsWith("\"") && value.endsWith("\"")) {
+            if (!stringLiterals.containsKey(value)) {
+                String label = "str_" + stringCounter++;
+                stringLiterals.put(value, label);
+
+                // Eliminar comillas y escapar caracteres
+                String content = value.substring(1, value.length() - 1);
+                content = content.replace("\\n", "\\n")
+                        .replace("\\t", "\\t")
+                        .replace("\\\"", "\\\"");
+
+                dataSegment.put(label, ".asciiz \"" + content + "\"");
+            }
+        }
     }
 
     /**
@@ -48,6 +92,7 @@ public class MIPSGenerator {
         StringBuilder data = new StringBuilder();
         data.append(".data\n");
 
+        // Agregar los datos ya existentes (de addGlobalVariables)
         for (Map.Entry<String, String> entry : dataSegment.entrySet()) {
             data.append(entry.getKey()).append(": ").append(entry.getValue()).append("\n");
         }
@@ -58,22 +103,36 @@ public class MIPSGenerator {
     /**
      * Genera el segmento de texto (.text)
      */
-    private String generateTextSegment(List<TACInstruction> tacList) {
+    private String generateTextSegment() {
         StringBuilder text = new StringBuilder();
-        text.append(".text\n");
-        text.append(".globl main\n\n");
-
-        for (TACInstruction tac : tacList) {
-            allocator.advanceLine(); // Avanzar contador de línea
-            generateInstruction(tac);
-        }
+        text.append("\n.text\n");
+        text.append(".globl main\n");
+        text.append("main:\n");
+        text.append("    # Inicialización del programa\n");
+        text.append("    move    $fp, $sp\n\n");
 
         // Agregar todas las instrucciones generadas
         for (MIPSInstruction instr : instructions) {
             text.append(instr.toString()).append("\n");
         }
 
+        // Exit del programa
+        text.append("\n");
+        text.append("    # Fin del programa\n");
+        text.append("    li      $v0, 10\n");
+        text.append("    syscall\n");
+
         return text.toString();
+    }
+
+    /**
+     * Genera todas las instrucciones MIPS
+     */
+    private void generateInstructions(List<TACInstruction> tacList) {
+        for (TACInstruction tac : tacList) {
+            allocator.advanceLine();
+            generateInstruction(tac);
+        }
     }
 
     /**
@@ -104,7 +163,6 @@ public class MIPSGenerator {
                 break;
 
             case LABEL:
-                // L1, L2, loops, etc.
                 generateLabel(tac);
                 break;
 
@@ -136,6 +194,10 @@ public class MIPSGenerator {
                 generateFunctionEpilog(tac);
                 break;
 
+            case END_CLASS:
+                instructions.add(MIPSInstruction.comment("end Class " + tac.getLabel()));
+                break;
+
             case TRY_BEGIN:
                 generateTryBegin(tac);
                 break;
@@ -152,24 +214,132 @@ public class MIPSGenerator {
 
     /**
      * Genera asignación: x = y
+     * MEJORADO: Maneja string literals, evita moves redundantes, arrays
      */
     private void generateAssignment(TACInstruction tac) {
         String dest = tac.getResult();
         String src = tac.getArg1();
 
-        String destReg = allocator.getReg(dest);
+        // CASO 1: String literal
+        if (src != null && src.startsWith("\"") && src.endsWith("\"")) {
+            String label = stringLiterals.get(src);
+            if (label != null) {
+                String destReg = allocator.getReg(dest);
+                instructions.add(MIPSInstruction.la(destReg, label));
+                allocator.markDirty(destReg);
+            }
+            return;
+        }
 
+        // CASO 2: Inmediato (constante numérica)
         if (isImmediate(src)) {
-            // li $dest, immediate
+            String destReg = allocator.getReg(dest);
             int value = Integer.parseInt(src);
             instructions.add(MIPSInstruction.li(destReg, value));
-        } else {
-            String srcReg = allocator.getReg(src);
-            // move $dest, $src
+            allocator.markDirty(destReg);
+            return;
+        }
+
+        // CASO 3: Acceso a array (dest = arr[idx])
+        if (src != null && src.contains("[") && src.contains("]")) {
+            generateArrayLoad(dest, src);
+            return;
+        }
+
+        // CASO 4: Asignación a array (arr[idx] = src)
+        if (dest != null && dest.contains("[") && dest.contains("]")) {
+            generateArrayStore(dest, src);
+            return;
+        }
+
+        // CASO 5: Variable normal
+        String destReg = allocator.getReg(dest);
+        String srcReg = allocator.getReg(src);
+
+        // MEJORA: Evitar move redundante (move $t0, $t0)
+        if (!destReg.equals(srcReg)) {
             instructions.add(MIPSInstruction.move(destReg, srcReg));
         }
 
         allocator.markDirty(destReg);
+    }
+
+    /**
+     * Carga desde array: dest = arr[idx]
+     */
+    private void generateArrayLoad(String dest, String arrayAccess) {
+        int openBracket = arrayAccess.indexOf('[');
+        int closeBracket = arrayAccess.indexOf(']');
+
+        if (openBracket < 0 || closeBracket < 0) return;
+
+        String arrayName = arrayAccess.substring(0, openBracket);
+        String index = arrayAccess.substring(openBracket + 1, closeBracket);
+
+        Symbol arraySym = tacGenerator.getSymbol(arrayName);
+        if (arraySym == null) {
+            instructions.add(MIPSInstruction.comment("ERROR: Array " + arrayName + " not found"));
+            return;
+        }
+
+        int baseOffset = arraySym.getOffset();
+        String destReg = allocator.getReg(dest);
+
+        // Si índice es constante
+        if (isImmediate(index)) {
+            int idx = Integer.parseInt(index);
+            int offset = baseOffset + (idx * 4);
+            instructions.add(MIPSInstruction.loadStore(OpCode.LW, destReg, offset + "($sp)"));
+        } else {
+            // Índice es variable: calcular dirección
+            String indexReg = allocator.getReg(index);
+            String addrReg = allocator.getReg("temp_addr");
+
+            // addr = baseOffset + index * 4
+            instructions.add(MIPSInstruction.typeI(OpCode.ADDI, addrReg, indexReg, 0));
+            instructions.add(MIPSInstruction.typeI(OpCode.ADDI, addrReg, addrReg, baseOffset));
+            instructions.add(MIPSInstruction.loadStore(OpCode.LW, destReg, "0(" + addrReg + ")"));
+
+            allocator.freeRegister(addrReg);
+        }
+
+        allocator.markDirty(destReg);
+    }
+
+    /**
+     * Almacena en array: arr[idx] = src
+     */
+    private void generateArrayStore(String arrayAccess, String src) {
+        int openBracket = arrayAccess.indexOf('[');
+        int closeBracket = arrayAccess.indexOf(']');
+
+        if (openBracket < 0 || closeBracket < 0) return;
+
+        String arrayName = arrayAccess.substring(0, openBracket);
+        String index = arrayAccess.substring(openBracket + 1, closeBracket);
+
+        Symbol arraySym = tacGenerator.getSymbol(arrayName);
+        if (arraySym == null) {
+            instructions.add(MIPSInstruction.comment("ERROR: Array " + arrayName + " not found"));
+            return;
+        }
+
+        int baseOffset = arraySym.getOffset();
+        String srcReg = allocator.getReg(src);
+
+        if (isImmediate(index)) {
+            int idx = Integer.parseInt(index);
+            int offset = baseOffset + (idx * 4);
+            instructions.add(MIPSInstruction.loadStore(OpCode.SW, srcReg, offset + "($sp)"));
+        } else {
+            String indexReg = allocator.getReg(index);
+            String addrReg = allocator.getReg("temp_addr");
+
+            instructions.add(MIPSInstruction.typeI(OpCode.ADDI, addrReg, indexReg, baseOffset));
+            instructions.add(MIPSInstruction.loadStore(OpCode.SW, srcReg, "0(" + addrReg + ")"));
+
+            allocator.freeRegister(addrReg);
+        }
     }
 
     /**
@@ -187,16 +357,13 @@ public class MIPSGenerator {
         OpCode opCode = getMipsArithmeticOp(op);
 
         if (isImmediate(arg2)) {
-            // Operación inmediata: addi, subi, etc.
             int immediate = Integer.parseInt(arg2);
 
             if (op.equals("+")) {
                 instructions.add(MIPSInstruction.typeI(OpCode.ADDI, resultReg, arg1Reg, immediate));
             } else if (op.equals("-")) {
-                // subi es pseudo-instrucción, usar addi con negativo
                 instructions.add(MIPSInstruction.typeI(OpCode.ADDI, resultReg, arg1Reg, -immediate));
             } else {
-                // mul/div con inmediato requiere cargar a registro primero
                 String tempReg = allocator.getReg("temp_imm");
                 instructions.add(MIPSInstruction.li(tempReg, immediate));
                 instructions.add(MIPSInstruction.typeR(opCode, resultReg, arg1Reg, tempReg));
@@ -204,7 +371,6 @@ public class MIPSGenerator {
             }
         } else {
             String arg2Reg = allocator.getReg(arg2);
-            // Operación entre registros
             instructions.add(MIPSInstruction.typeR(opCode, resultReg, arg1Reg, arg2Reg));
         }
 
@@ -212,7 +378,7 @@ public class MIPSGenerator {
     }
 
     /**
-     * Genera operaciones unarias usando Register.ZERO
+     * Genera operaciones unarias
      */
     private void generateUnary(TACInstruction tac) {
         String result = tac.getResult();
@@ -223,10 +389,8 @@ public class MIPSGenerator {
         String argReg = allocator.getReg(arg);
 
         if (op.equals("-")) {
-            // Negación: sub $result, $zero, $arg usando Register.ZERO
             instructions.add(MIPSInstruction.typeR(OpCode.SUB, resultReg, Register.ZERO.getName(), argReg));
         } else if (op.equals("!")) {
-            // NOT lógico: seq $result, $arg, $zero usando Register.ZERO
             instructions.add(MIPSInstruction.typeR(OpCode.SEQ, resultReg, argReg, Register.ZERO.getName()));
         } else {
             instructions.add(MIPSInstruction.comment("Unknown unary operator: " + op));
@@ -253,50 +417,51 @@ public class MIPSGenerator {
         String label = tac.getLabel();
 
         String arg1Reg = allocator.getReg(arg1);
-        String arg2Reg = allocator.getReg(arg2);
 
-        // Obtener operación de branch correspondiente
+        // MEJORA: Si arg2 es inmediato, cargarlo a registro
+        String arg2Reg;
+        boolean needsFree = false;
+
+        if (isImmediate(arg2)) {
+            arg2Reg = allocator.getReg("temp_cmp");
+            instructions.add(MIPSInstruction.li(arg2Reg, Integer.parseInt(arg2)));
+            needsFree = true;
+        } else {
+            arg2Reg = allocator.getReg(arg2);
+        }
+
         OpCode branchOp = getMipsComparisonBranchOp(relop);
-
-        // if arg1 relop arg2 goto label
         instructions.add(MIPSInstruction.branch(branchOp, arg1Reg, arg2Reg, label));
+
+        if (needsFree) {
+            allocator.freeRegister(arg2Reg);
+        }
     }
 
     /**
-     * Genera llamada a función sin asignación: call f(params)
+     * Genera llamada a función sin asignación
      */
     private void generateCall(TACInstruction tac) {
         String functionName = tac.getArg1();
         List<String> params = tac.getParams();
 
-        // Generar código para pasar parámetros
         generateParameters(params);
-
-        // Guardar registros temporales antes de llamada
         allocator.saveTemporaries();
-
-        // jal function
         instructions.add(MIPSInstruction.jump(OpCode.JAL, functionName));
     }
 
     /**
-     * Genera llamada a función con asignación: x = call f(params)
+     * Genera llamada a función con asignación
      */
     private void generateAssignCall(TACInstruction tac) {
         String result = tac.getResult();
         String functionName = tac.getArg1();
         List<String> params = tac.getParams();
 
-        // Generar código para pasar parámetros
         generateParameters(params);
-
-        // Guardar registros temporales antes de llamada
         allocator.saveTemporaries();
-
-        // jal function
         instructions.add(MIPSInstruction.jump(OpCode.JAL, functionName));
 
-        // Mover resultado de $v0 a variable destino
         String resultReg = allocator.getReg(result);
         instructions.add(MIPSInstruction.move(resultReg, Register.V0.getName()));
         allocator.markDirty(resultReg);
@@ -306,7 +471,6 @@ public class MIPSGenerator {
      * Genera parámetros usando objetos Register
      */
     private void generateParameters(List<String> params) {
-        // Array de registros de argumentos
         Register[] argRegs = {Register.A0, Register.A1, Register.A2, Register.A3};
 
         for (int i = 0; i < params.size(); i++) {
@@ -314,10 +478,8 @@ public class MIPSGenerator {
             String paramReg = allocator.getReg(param);
 
             if (i < 4) {
-                // Primeros 4 parámetros en $a0-$a3
                 instructions.add(MIPSInstruction.move(argRegs[i].getName(), paramReg));
             } else {
-                // Parámetros adicionales en stack
                 int offset = (i - 4) * 4;
                 instructions.add(MIPSInstruction.loadStore(OpCode.SW, paramReg, offset + "($sp)"));
             }
@@ -325,55 +487,38 @@ public class MIPSGenerator {
     }
 
     /**
-     * Genera creación de objeto: x = new Class(params)
+     * Genera creación de objeto
      */
     private void generateNew(TACInstruction tac) {
         String result = tac.getResult();
         String className = tac.getArg1();
         List<String> params = tac.getParams();
 
-        // Simplificado: llamar a función constructora
         instructions.add(MIPSInstruction.comment("new " + className));
-
-        // Generar parámetros
         generateParameters(params);
-
-        // Llamar al constructor
         instructions.add(MIPSInstruction.jump(OpCode.JAL, className + "_constructor"));
 
-        // Guardar resultado usando Register.V0
         String resultReg = allocator.getReg(result);
         instructions.add(MIPSInstruction.move(resultReg, Register.V0.getName()));
         allocator.markDirty(resultReg);
     }
 
     /**
-     * Genera return usando Register.V0
+     * Genera return
      */
     private void generateReturn(TACInstruction tac) {
         String returnValue = tac.getArg1();
 
-        if (returnValue != null && !returnValue.isEmpty()) {
+        if (returnValue != null && !returnValue.isEmpty() && !returnValue.equals("null")) {
             String returnReg = allocator.getReg(returnValue);
-            // Mover valor de retorno a $v0 usando constante Register.V0
             instructions.add(MIPSInstruction.move(Register.V0.getName(), returnReg));
         }
 
-        // Saltar al epílogo de la función
         if (currentFunction != null) {
             instructions.add(MIPSInstruction.jump(OpCode.J, currentFunction + "_epilog"));
         } else {
             instructions.add(MIPSInstruction.jump(OpCode.J, "epilog"));
         }
-    }
-
-    /**
-     * Genera parámetro para llamada (deprecado - usar generateParameters)
-     */
-    private void generateParam(TACInstruction tac) {
-        // Este método ya no se usa con la nueva estructura
-        // Los parámetros se manejan en generateParameters()
-        instructions.add(MIPSInstruction.comment("param (deprecated)"));
     }
 
     /**
@@ -385,7 +530,7 @@ public class MIPSGenerator {
     }
 
     /**
-     * Genera prólogo de función usando Register constantes
+     * Genera prólogo de función
      */
     private void generateFunctionProlog(TACInstruction tac) {
         String functionName = tac.getLabel();
@@ -393,27 +538,19 @@ public class MIPSGenerator {
 
         instructions.add(MIPSInstruction.label(functionName));
 
-        // Tamaño total del frame
         int localSpace = calculateLocalSpace();
         int frameSize = 8 + localSpace;
 
-        // Reservar todo el frame de una sola vez
         instructions.add(MIPSInstruction.typeI(OpCode.ADDI, Register.SP.getName(), Register.SP.getName(), -frameSize));
-
-        // Guardar FP y RA en las posiciones estándar
-        instructions.add(MIPSInstruction.loadStore(OpCode.SW, Register.FP.getName(),  (frameSize - 8) + "(" + Register.SP.getName() + ")"));
-        instructions.add(MIPSInstruction.loadStore(OpCode.SW, Register.RA.getName(),  (frameSize - 4) + "(" + Register.SP.getName() + ")"));
-
-        // Nuevo frame pointer
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, Register.FP.getName(), (frameSize - 8) + "(" + Register.SP.getName() + ")"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, Register.RA.getName(), (frameSize - 4) + "(" + Register.SP.getName() + ")"));
         instructions.add(MIPSInstruction.move(Register.FP.getName(), Register.SP.getName()));
 
-        // Reset del allocator
         allocator.reset();
     }
 
-
     /**
-     * Genera epílogo de función usando Register constantes
+     * Genera epílogo de función
      */
     private void generateFunctionEpilog(TACInstruction tac) {
         String functionName = tac.getLabel();
@@ -422,47 +559,37 @@ public class MIPSGenerator {
         int localSpace = calculateLocalSpace();
         int frameSize = 8 + localSpace;
 
-        // Flush de los registros / spills
         allocator.flushAll();
 
-        // Restaurar SP = FP
         instructions.add(MIPSInstruction.move(Register.SP.getName(), Register.FP.getName()));
-
-        // Restaurar FP y RA
-        instructions.add(MIPSInstruction.loadStore(OpCode.LW, Register.FP.getName(),  (frameSize - 8) + "(" + Register.SP.getName() + ")"));
-        instructions.add(MIPSInstruction.loadStore(OpCode.LW, Register.RA.getName(),  (frameSize - 4) + "(" + Register.SP.getName() + ")"));
-
-        // Liberar frame completo
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, Register.FP.getName(), (frameSize - 8) + "(" + Register.SP.getName() + ")"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, Register.RA.getName(), (frameSize - 4) + "(" + Register.SP.getName() + ")"));
         instructions.add(MIPSInstruction.typeI(OpCode.ADDI, Register.SP.getName(), Register.SP.getName(), frameSize));
-
-        // Regresar
         instructions.add(MIPSInstruction.jumpReg(Register.RA.getName()));
+
+        currentFunction = null;
     }
 
-
     /**
-     * Genera inicio de bloque try
+     * Genera try begin
      */
     private void generateTryBegin(TACInstruction tac) {
         String catchLabel = tac.getLabel();
         instructions.add(MIPSInstruction.comment("try_begin -> catch: " + catchLabel));
-        // En una implementación completa, aquí se configurarían manejadores de excepciones
     }
 
     /**
-     * Genera fin de bloque try
+     * Genera try end
      */
     private void generateTryEnd(TACInstruction tac) {
         instructions.add(MIPSInstruction.comment("try_end"));
     }
 
     /**
-     * Determina si un valor es inmediato (constante numérica)
+     * Verifica si es inmediato
      */
     private boolean isImmediate(String value) {
-        if (value == null || value.isEmpty()) {
-            return false;
-        }
+        if (value == null || value.isEmpty()) return false;
         try {
             Integer.parseInt(value);
             return true;
@@ -472,7 +599,7 @@ public class MIPSGenerator {
     }
 
     /**
-     * Obtiene la operación MIPS para operaciones aritméticas
+     * Obtiene opcode aritmético
      */
     private OpCode getMipsArithmeticOp(String op) {
         switch (op) {
@@ -485,7 +612,7 @@ public class MIPSGenerator {
     }
 
     /**
-     * Obtiene la operación MIPS para comparaciones (branches)
+     * Obtiene opcode de branch
      */
     private OpCode getMipsComparisonBranchOp(String op) {
         switch (op) {
@@ -500,22 +627,7 @@ public class MIPSGenerator {
     }
 
     /**
-     * Obtiene la operación MIPS para comparaciones (set)
-     */
-    private OpCode getMipsComparisonSetOp(String op) {
-        switch (op) {
-            case "<": return OpCode.SLT;
-            case ">": return OpCode.SGT;
-            case "<=": return OpCode.SLE;
-            case ">=": return OpCode.SGE;
-            case "==": return OpCode.SEQ;
-            case "!=": return OpCode.SNE;
-            default: return OpCode.SEQ;
-        }
-    }
-
-    /**
-     * Genera una etiqueta temporal única
+     * Genera etiqueta temporal única
      */
     private String generateTempLabel() {
         return "L" + (labelCounter++);
@@ -525,19 +637,18 @@ public class MIPSGenerator {
      * Calcula espacio necesario para variables locales
      */
     private int calculateLocalSpace() {
-        // Simplificado: 16 palabras (64 bytes) para variables locales
-        return 64;
+        return 64; // Simplificado
     }
 
     /**
-     * Agrega una variable al segmento de datos
+     * Agrega variable al segmento de datos
      */
     public void addDataVariable(String name, String value) {
         dataSegment.put(name, value);
     }
 
     /**
-     * Obtiene las instrucciones generadas (incluye las del allocator)
+     * Obtiene instrucciones generadas
      */
     public List<MIPSInstruction> getInstructions() {
         List<MIPSInstruction> allInstructions = new ArrayList<>();
@@ -547,7 +658,7 @@ public class MIPSGenerator {
     }
 
     /**
-     * Obtiene el allocator de registros
+     * Obtiene allocator
      */
     public RegisterAllocator getAllocator() {
         return allocator;
@@ -557,17 +668,15 @@ public class MIPSGenerator {
      * Obtiene contador de registros usados
      */
     public int getUsedRegistersCount() {
-        // Contar cuántos registros tienen variables asignadas
         int count = 0;
-        allocator.printState(); // Debug
-        return count; // Simplificado
+        allocator.printState();
+        return count;
     }
 
     /**
-     * Agrega variables globales al segmento de datos del generador MIPS
+     * Agrega variables globales al segmento de datos
      */
     public void addGlobalVariables() {
-        // Agregar strings comunes para syscalls
         addDataVariable("newline", ".asciiz \"\\n\"");
         addDataVariable("space", ".asciiz \" \"");
         addDataVariable("true_str", ".asciiz \"true\"");
