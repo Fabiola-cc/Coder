@@ -483,4 +483,8 @@ public class RegisterAllocator {
         System.out.println("Variables asignadas: " + variableToRegister);
         System.out.println("Registros libres: " + freeRegisters.size());
     }
+
+    public int getCurrentLine() {
+        return currentLine;
+    }
 }

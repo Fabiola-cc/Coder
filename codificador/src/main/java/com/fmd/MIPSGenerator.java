@@ -792,6 +792,108 @@ public class MIPSGenerator {
     }
 
     /**
+     * Genera impresión secuencial para "string" + int o int + "string"
+     * NO imprime aquí, solo marca que este temporal representa una concatenación
+     * La impresión real ocurre en print()
+     */
+    private void generateSequentialPrint(TACInstruction tac) {
+        String result = tac.getResult();
+        String arg1 = tac.getArg1();
+        String arg2 = tac.getArg2();
+
+        instructions.add(MIPSInstruction.comment("String concat (for print): " + result + " = " + arg1 + " + " + arg2));
+
+        // NO HACER NADA MÁS
+        // El temporal 'result' ahora representa una concatenación
+        // Cuando llegue a print(), expandiremos todos los argumentos
+    }
+
+    /**
+     * Expande y imprime un parámetro que puede ser resultado de concatenaciones
+     */
+    private void expandAndPrint(String param, int currentLine) {
+        // Buscar hacia ATRÁS desde currentLine
+        List<TACInstruction> instructions = tacGenerator.getInstructions();
+
+        for (int i = currentLine - 1; i >= 0; i--) {
+            TACInstruction tac = instructions.get(i);
+
+            if (tac.getOp() == TACInstruction.OpType.BINARY_OP &&
+                    tac.getOperator().equals("+") &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(param) &&
+                    isStringOperation(tac.getArg1(), tac.getArg2())) {
+
+                // Es una concatenación, expandir recursivamente
+                // Pasar 'i' como nueva línea actual para las búsquedas recursivas
+                expandAndPrint(tac.getArg1(), i);
+                expandAndPrint(tac.getArg2(), i);
+                return;
+            }
+        }
+
+        // No es concatenación, imprimir directamente
+        printArgument(param);
+    }
+
+    /**
+     * Imprime un argumento (puede ser string o int)
+     */
+    private void printArgument(String arg) {
+        // PRIMERO: Detectar tipo antes de obtener registros
+
+        // Caso 1: String literal
+        if (isStringLiteral(arg)) {
+            String label = stringLiterals.get(arg);
+            instructions.add(MIPSInstruction.la("$a0", label));
+            instructions.add(MIPSInstruction.li("$v0", 4));
+            instructions.add(MIPSInstruction.syscall());
+            return;
+        }
+
+        // Caso 2: Número literal
+        if (isImmediate(arg)) {
+            instructions.add(MIPSInstruction.li("$a0", Integer.parseInt(arg)));
+            instructions.add(MIPSInstruction.li("$v0", 1));
+            instructions.add(MIPSInstruction.syscall());
+            return;
+        }
+
+        // Caso 3: Variable con símbolo conocido
+        Symbol paramSym = tacGenerator.getSymbol(arg);
+        if (paramSym != null && paramSym.getType() != null) {
+            String paramReg = allocator.getReg(arg);
+            instructions.add(MIPSInstruction.move("$a0", paramReg));
+
+            String type = paramSym.getType();
+            if (type.equals("integer")) {
+                instructions.add(MIPSInstruction.li("$v0", 1));
+                instructions.add(MIPSInstruction.syscall());
+            } else if (type.equals("string")) {
+                instructions.add(MIPSInstruction.li("$v0", 4));
+                instructions.add(MIPSInstruction.syscall());
+            }
+            return;
+        }
+
+        // Caso 4: Temporal - detectar tipo por análisis
+        String argReg = allocator.getReg(arg);
+        instructions.add(MIPSInstruction.move("$a0", argReg));
+
+        if (temporalContainsString(arg)) {
+            instructions.add(MIPSInstruction.li("$v0", 4)); // print string
+            instructions.add(MIPSInstruction.syscall());
+        } else if (temporalContainsInt(arg)) {
+            instructions.add(MIPSInstruction.li("$v0", 1)); // print int
+            instructions.add(MIPSInstruction.syscall());
+        } else {
+            // Último recurso: usar función print genérica
+            allocator.saveTemporaries();
+            instructions.add(MIPSInstruction.jump(OpCode.JAL, "print"));
+        }
+    }
+
+    /**
      * Verifica si un temporal contiene un string
      * Busca en las instrucciones TAC previas para ver si fue asignado desde un string
      */
@@ -837,6 +939,95 @@ public class MIPSGenerator {
                 }
 
                 if (temporalContainsString(tac.getArg1()) || temporalContainsString(tac.getArg2())) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Verifica si un temporal contiene un entero
+     * Busca en las instrucciones TAC previas para ver si fue asignado desde un string
+     */
+    private boolean temporalContainsInt(String temporal) {
+        if (temporal == null || !temporal.matches("^t\\d+$")) {
+            return false;
+        }
+
+        // Buscar en las instrucciones TAC la asignación de este temporal
+        for (TACInstruction tac : tacGenerator.getInstructions()) {
+            if (tac.getOp() == TACInstruction.OpType.ASSIGN &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(temporal)) {
+
+                String source = tac.getArg1();
+
+                // Si se asignó desde un número literal
+                if (isImmediate(source)) {
+                    return true;
+                }
+
+                // Si se asignó desde una variable integer
+                Symbol sym = tacGenerator.getSymbol(source);
+                if (sym != null && sym.getType() != null && sym.getType().equals("integer")) {
+                    return true;
+                }
+
+                // Si se asignó desde otro temporal que es int (recursivo)
+                if (source != null && source.matches("^t\\d+$")) {
+                    return temporalContainsInt(source);
+                }
+            }
+
+            // Si fue resultado de una operación aritmética
+            if (tac.getOp() == TACInstruction.OpType.BINARY_OP &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(temporal)) {
+
+                String operator = tac.getOperator();
+
+                // Operadores aritméticos producen integers
+                if (operator.equals("+") || operator.equals("-") ||
+                        operator.equals("*") || operator.equals("/") ||
+                        operator.equals("%")) {
+
+                    // Verificar que no sea concatenación de strings
+                    // (+ puede ser tanto aritmético como concatenación)
+                    if (operator.equals("+")) {
+                        // Si alguno es string, es concatenación, no aritmética
+                        if (isStringLiteral(tac.getArg1()) || isStringLiteral(tac.getArg2()) ||
+                                temporalContainsString(tac.getArg1()) || temporalContainsString(tac.getArg2())) {
+                            return false; // Es concatenación, no produce int
+                        }
+                    }
+
+                    return true; // Es operación aritmética
+                }
+
+                // Operadores de comparación también producen integers (0 o 1)
+                if (operator.equals("<") || operator.equals("<=") ||
+                        operator.equals(">") || operator.equals(">=") ||
+                        operator.equals("==") || operator.equals("!=")) {
+                    return true;
+                }
+            }
+
+            // Si fue resultado de una operación unaria
+            if (tac.getOp() == TACInstruction.OpType.UNARY_OP &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(temporal)) {
+
+                String operator = tac.getOperator();
+
+                // Negación aritmética produce integer
+                if (operator.equals("-")) {
+                    return true;
+                }
+
+                // Negación lógica produce boolean (que es integer en MIPS)
+                if (operator.equals("!")) {
                     return true;
                 }
             }
@@ -974,6 +1165,11 @@ public class MIPSGenerator {
         String arg1 = tac.getArg1();
         String arg2 = tac.getArg2();
 
+        if (temporalContainsInt(arg1) || temporalContainsInt(arg2)) {
+            generateSequentialPrint(tac);
+            return;
+        }
+
         instructions.add(MIPSInstruction.comment("String concat: " + result + " = " + arg1 + " + " + arg2));
 
         String arg1Reg = prepareStringArgument(arg1);
@@ -1006,40 +1202,7 @@ public class MIPSGenerator {
             return reg;
         }
 
-        // Caso 2: Verificar tipo del argumento
-        Symbol sym = tacGenerator.getSymbol(arg);
-
-        // Caso 2a: Es un entero que necesita conversión
-        if (sym != null && sym.getType() != null && sym.getType().equals("integer")) {
-            String intReg = allocator.getReg(arg);
-
-            instructions.add(MIPSInstruction.move("$a0", intReg));
-            allocator.saveTemporaries();
-            instructions.add(MIPSInstruction.jump(OpCode.JAL, "int_to_string"));
-
-            String strReg = allocator.getReg("temp_int_str");
-            instructions.add(MIPSInstruction.move(strReg, "$v0"));
-
-            return strReg;
-        }
-
-        // Caso 2b: Es inmediato (número literal)
-        if (isImmediate(arg)) {
-            String intReg = allocator.getReg("temp_imm_lit");
-            instructions.add(MIPSInstruction.li(intReg, Integer.parseInt(arg)));
-
-            instructions.add(MIPSInstruction.move("$a0", intReg));
-            allocator.saveTemporaries();
-            instructions.add(MIPSInstruction.jump(OpCode.JAL, "int_to_string"));
-
-            String strReg = allocator.getReg("temp_int_str_lit");
-            instructions.add(MIPSInstruction.move(strReg, "$v0"));
-
-            allocator.freeRegister(intReg);
-            return strReg;
-        }
-
-        // Caso 3: Variable string normal o temporal
+        // Caso 2: Variable string normal o temporal
         return allocator.getReg(arg);
     }
 
@@ -1113,32 +1276,8 @@ public class MIPSGenerator {
 
         if (functionName.equals("print") && !params.isEmpty()) {
             String param = params.get(0);
-            String paramReg = allocator.getReg(param);
 
-            // Mover parámetro a $a0
-            instructions.add(MIPSInstruction.move("$a0", paramReg));
-
-            // Intentar detectar el tipo
-            Symbol paramSym = tacGenerator.getSymbol(param);
-            if (paramSym != null && paramSym.getType() != null) {
-                String type = paramSym.getType();
-
-                if (type.equals("integer")) {
-                    // Print directo de entero
-                    instructions.add(MIPSInstruction.li("$v0", 1));
-                    instructions.add(MIPSInstruction.syscall());
-                    return;
-                } else if (type.equals("string")) {
-                    // Print directo de string
-                    instructions.add(MIPSInstruction.li("$v0", 4));
-                    instructions.add(MIPSInstruction.syscall());
-                    return;
-                }
-            }
-
-            // Si no sabemos el tipo, llamar a print genérica
-            allocator.saveTemporaries();
-            instructions.add(MIPSInstruction.jump(OpCode.JAL, "print"));
+            expandAndPrint(param, allocator.getCurrentLine());
             return;
         }
 
@@ -1419,10 +1558,8 @@ public class MIPSGenerator {
         instructions.add(MIPSInstruction.label("print_bool_end"));
         instructions.add(MIPSInstruction.jumpReg("$ra"));
     }
-// ============================================
-// RUNTIME FUNCTIONS - AGREGAR AL FINAL DE LA CLASE
-// ============================================
 
+    // RUNTIME FUNCTIONS - AGREGAR AL FINAL DE LA CLASE
     /**
      * Genera todas las funciones de runtime (LLAMAR desde generate())
      */
@@ -1431,6 +1568,7 @@ public class MIPSGenerator {
         generateReadIntFunction();
         generatePrintBoolFunction();
         generatePrintNewlineFunction();
+        generateConcatStrings();
     }
 
     private void generatePrintFunction() {
@@ -1476,6 +1614,84 @@ public class MIPSGenerator {
         instructions.add(MIPSInstruction.syscall());
         instructions.add(MIPSInstruction.jumpReg("$ra"));
     }
+
+    private void generateConcatStrings() {
+        instructions.add(MIPSInstruction.label("concat_strings"));
+        instructions.add(MIPSInstruction.comment("Concatena strings: $a0 + $a1 -> $v0 (nuevo heap)"));
+
+        // Guardar registros
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$sp", "$sp", -20));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$ra", "16($sp)"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$s0", "12($sp)"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$s1", "8($sp)"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$s2", "4($sp)"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$s3", "0($sp)"));
+
+        instructions.add(MIPSInstruction.move("$s0", "$a0")); // str1
+        instructions.add(MIPSInstruction.move("$s1", "$a1")); // str2
+
+        // Calcular longitud de str1
+        instructions.add(MIPSInstruction.move("$t0", "$s0"));
+        instructions.add(MIPSInstruction.li("$s2", 0)); // len1
+        instructions.add(MIPSInstruction.label("cs_len1"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.LB, "$t1", "0($t0)"));
+        instructions.add(MIPSInstruction.branchUnary(OpCode.BEQZ, "$t1", "cs_len1_done"));
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$t0", "$t0", 1));
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$s2", "$s2", 1));
+        instructions.add(MIPSInstruction.jump(OpCode.J, "cs_len1"));
+        instructions.add(MIPSInstruction.label("cs_len1_done"));
+
+        // Calcular longitud de str2
+        instructions.add(MIPSInstruction.move("$t0", "$s1"));
+        instructions.add(MIPSInstruction.li("$s3", 0)); // len2
+        instructions.add(MIPSInstruction.label("cs_len2"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.LB, "$t1", "0($t0)"));
+        instructions.add(MIPSInstruction.branchUnary(OpCode.BEQZ, "$t1", "cs_len2_done"));
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$t0", "$t0", 1));
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$s3", "$s3", 1));
+        instructions.add(MIPSInstruction.jump(OpCode.J, "cs_len2"));
+        instructions.add(MIPSInstruction.label("cs_len2_done"));
+
+        // Reservar memoria (len1 + len2 + 1)
+        instructions.add(MIPSInstruction.typeR(OpCode.ADD, "$a0", "$s2", "$s3"));
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$a0", "$a0", 1));
+        instructions.add(MIPSInstruction.li("$v0", 9));
+        instructions.add(MIPSInstruction.syscall());
+        instructions.add(MIPSInstruction.move("$t2", "$v0")); // buffer destino
+
+        // Copiar str1
+        instructions.add(MIPSInstruction.move("$t0", "$s0"));
+        instructions.add(MIPSInstruction.move("$t1", "$t2"));
+        instructions.add(MIPSInstruction.label("cs_copy1"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.LB, "$t3", "0($t0)"));
+        instructions.add(MIPSInstruction.branchUnary(OpCode.BEQZ, "$t3", "cs_copy1_done"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SB, "$t3", "0($t1)"));
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$t0", "$t0", 1));
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$t1", "$t1", 1));
+        instructions.add(MIPSInstruction.jump(OpCode.J, "cs_copy1"));
+        instructions.add(MIPSInstruction.label("cs_copy1_done"));
+
+        // Copiar str2
+        instructions.add(MIPSInstruction.move("$t0", "$s1"));
+        instructions.add(MIPSInstruction.label("cs_copy2"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.LB, "$t3", "0($t0)"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SB, "$t3", "0($t1)"));
+        instructions.add(MIPSInstruction.branchUnary(OpCode.BEQZ, "$t3", "cs_done"));
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$t0", "$t0", 1));
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$t1", "$t1", 1));
+        instructions.add(MIPSInstruction.jump(OpCode.J, "cs_copy2"));
+
+        // Retornar
+        instructions.add(MIPSInstruction.label("cs_done"));
+        instructions.add(MIPSInstruction.move("$v0", "$t2"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, "$s3", "0($sp)"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, "$s2", "4($sp)"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, "$s1", "8($sp)"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, "$s0", "12($sp)"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, "$ra", "16($sp)"));
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$sp", "$sp", 20));
+        instructions.add(MIPSInstruction.jumpReg("$ra"));
+    }
     /**
      * Agrega variables globales al segmento de datos
      */
@@ -1484,7 +1700,7 @@ public class MIPSGenerator {
         addDataVariable("space", ".asciiz \" \"");
         addDataVariable("true_str", ".asciiz \"true\"");
         addDataVariable("false_str", ".asciiz \"false\"");
+        addDataVariable("concat_buffer", ".space 512");
+        addDataVariable("int_buffer", ".space 32");
     }
-
-
 }

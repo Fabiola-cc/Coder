@@ -40,6 +40,8 @@ public class MIPSInstruction {
         // Memoria
         LW,     // lw $rt, offset($rs)
         SW,     // sw $rt, offset($rs)
+        LB,     // lb $rt, offset($rs)
+        SB,     // sb $rt, offset($rs)
         LA,     // la $rt, label (pseudo: load address)
         LI,     // li $rt, immediate (pseudo: load immediate)
 
@@ -225,6 +227,34 @@ public class MIPSInstruction {
     }
 
     /**
+     * MFHI: mfhi $rd
+     */
+    public static MIPSInstruction mfhi(String rd) {
+        MIPSInstruction instr = new MIPSInstruction(OpCode.MFHI);
+        instr.rd = rd;
+        return instr;
+    }
+
+    /**
+     * MFLO: mflo $rd
+     */
+    public static MIPSInstruction mflo(String rd) {
+        MIPSInstruction instr = new MIPSInstruction(OpCode.MFLO);
+        instr.rd = rd;
+        return instr;
+    }
+
+    /**
+     * Division: div $rs, $rt
+     */
+    public static MIPSInstruction div(String rs, String rt) {
+        MIPSInstruction instr = new MIPSInstruction(OpCode.DIV);
+        instr.rs = rs;
+        instr.rt = rt;
+        return instr;
+    }
+
+    /**
      * Syscall
      */
     public static MIPSInstruction syscall() {
@@ -296,7 +326,7 @@ public class MIPSInstruction {
                 break;
 
             // Load/Store: lw $rt, offset($base)
-            case LW: case SW:
+            case LW: case SW: case LB: case SB:
                 sb.append(rt).append(", ").append(immediate);
                 break;
 
@@ -316,8 +346,12 @@ public class MIPSInstruction {
                 break;
 
             // Unario: not $rd, $rs
-            case NOT: case MFHI: case MFLO:
+            case NOT:
                 sb.append(rd).append(", ").append(rs);
+                break;
+
+            case MFHI: case MFLO:
+                sb.append(rd);  // Solo el registro destino
                 break;
 
             // Division: div $rs, $rt
