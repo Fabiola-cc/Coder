@@ -31,6 +31,7 @@ public class MIPSGenerator {
     private Map<String, List<MIPSInstruction>> scopeInstructions; // label -> instrucciones
     private Stack<String> scopeStack; // stack de labels activos
     private List<MIPSInstruction> globalInstructions; // código fuera de funciones/clases
+    private Map<String, String> tempTypeMap;
 
     public MIPSGenerator(TACGenerator tacGenerator) {
         this.tacGenerator = tacGenerator;
@@ -45,6 +46,7 @@ public class MIPSGenerator {
         this.scopeInstructions = new HashMap<>();
         this.scopeStack = new Stack<>();
         this.globalInstructions = new ArrayList<>();
+        this.tempTypeMap = new HashMap<>();
     }
 
     /**
@@ -388,7 +390,19 @@ public class MIPSGenerator {
 
         switch (opType) {
             case ASSIGN:
-                generateAssignment(tac);
+                // Detectar si es property access o property set
+                String dest = tac.getResult();
+                String src = tac.getArg1();
+
+                if (dest != null && dest.contains(".")) {
+                    // Property set: obj.prop = value
+                    generatePropertySet(tac);
+                } else if (src != null && src.contains(".")) {
+                    // Property get: var = obj.prop
+                    generatePropertyGet(tac);
+                } else {
+                    generateAssignment(tac);
+                }
                 break;
 
             case BINARY_OP:
@@ -420,11 +434,23 @@ public class MIPSGenerator {
                 break;
 
             case CALL:
-                generateCall(tac);
+                // Detectar si es method call
+                String functionName = tac.getArg1();
+                if (functionName != null && functionName.contains(".")) {
+                    generateMethodCall(tac);
+                } else {
+                    generateCall(tac);
+                }
                 break;
 
             case ASSIGN_CALL:
-                generateAssignCall(tac);
+                // Detectar si es method call con asignación
+                String funcName = tac.getArg1();
+                if (funcName != null && funcName.contains(".")) {
+                    generateMethodCallWithReturn(tac);
+                } else {
+                    generateAssignCall(tac);
+                }
                 break;
 
             case NEW:
@@ -455,6 +481,126 @@ public class MIPSGenerator {
                 instructions.add(MIPSInstruction.comment("Unsupported OpType: " + opType));
                 break;
         }
+    }
+
+    private void generatePropertyGet(TACInstruction tac) {
+        String dest = tac.getResult();
+        String propertyAccess = tac.getArg1(); // "p.edad"
+
+        int dotIndex = propertyAccess.indexOf('.');
+        String objName = propertyAccess.substring(0, dotIndex);
+        String propName = propertyAccess.substring(dotIndex + 1);
+
+        instructions.add(MIPSInstruction.comment("Property get: " + dest + " = " + propertyAccess));
+
+        // Obtener registro del objeto
+        String objReg;
+        if (objName.equals("this")) {
+            objReg = "$a0";
+        } else {
+            // CRÍTICO: Usar el registro correcto del allocator
+            objReg = allocator.getReg(objName);
+        }
+
+        // Obtener offset de la propiedad
+        Symbol objSymbol = getObjectSymbol(objName);
+        if (objSymbol == null) {
+            instructions.add(MIPSInstruction.comment("ERROR: Object symbol not found: " + objName));
+            return;
+        }
+
+        int propOffset = getPropertyOffsetWithInheritance(objSymbol, propName);
+
+        // Cargar propiedad
+        String destReg = allocator.getReg(dest);
+        instructions.add(MIPSInstruction.loadStore(
+                OpCode.LW,
+                destReg,
+                propOffset + "(" + objReg + ")"
+        ));
+
+        allocator.markDirty(destReg);
+    }
+
+    private void generatePropertySet(TACInstruction tac) {
+        String propertyAccess = tac.getResult();
+        String value = tac.getArg1();
+
+        int dotIndex = propertyAccess.indexOf('.');
+        String objName = propertyAccess.substring(0, dotIndex);
+        String propName = propertyAccess.substring(dotIndex + 1);
+
+        instructions.add(MIPSInstruction.comment("Property set: " + propertyAccess + " = " + value));
+
+        // 1. Cargar THIS
+        String objReg = "$t8";
+        if (objName.equals("this")) {
+            instructions.add(MIPSInstruction.loadStore(OpCode.LW, objReg, "8($sp)"));
+        } else {
+            objReg = allocator.getReg(objName);
+        }
+
+        // 2. CRÍTICO: Cargar VALUE desde stack
+        String valueReg = "$t9"; // Registro temporal para el valor
+        Symbol valueSym = tacGenerator.getSymbol(value);
+
+        if (valueSym != null && objName.equals("this")) {
+            // Es parámetro, buscar su índice
+            Symbol funcSym = tacGenerator.getSymbol(currentFunction);
+            if (funcSym != null) {
+                List<Symbol> params = funcSym.getParams();
+                int paramIndex = -1;
+
+                for (int i = 0; i < params.size(); i++) {
+                    if (params.get(i).getName().equals(value)) {
+                        paramIndex = i;
+                        break;
+                    }
+                }
+
+                if (paramIndex >= 0) {
+                    // ESTE ES EL CÓDIGO CRÍTICO QUE DEBE EJECUTARSE:
+                    int offset = 12 + (paramIndex * 4);
+                    instructions.add(MIPSInstruction.loadStore(OpCode.LW, valueReg, offset + "($sp)"));
+
+                    // DEBUGGING: Agregar comentario
+                    instructions.add(MIPSInstruction.comment("Loaded param " + value + " from " + offset + "($sp) into " + valueReg));
+                } else {
+                    // No encontró el índice
+                    instructions.add(MIPSInstruction.comment("ERROR: Parameter index not found for " + value));
+                    valueReg = allocator.getReg(value);
+                }
+            } else {
+                instructions.add(MIPSInstruction.comment("ERROR: Current function not found"));
+                valueReg = allocator.getReg(value);
+            }
+        } else if (isImmediate(value)) {
+            // Es un número literal
+            instructions.add(MIPSInstruction.li(valueReg, Integer.parseInt(value)));
+        } else if (isStringLiteral(value)) {
+            // Es un string literal
+            String label = stringLiterals.get(value);
+            instructions.add(MIPSInstruction.la(valueReg, label));
+        } else {
+            // Es una variable normal
+            valueReg = allocator.getReg(value);
+        }
+
+        // 3. Obtener offset de la propiedad
+        Symbol objSymbol = getObjectSymbol(objName);
+        if (objSymbol == null) {
+            instructions.add(MIPSInstruction.comment("ERROR: Object symbol not found: " + objName));
+            return;
+        }
+
+        int propOffset = getPropertyOffsetWithInheritance(objSymbol, propName);
+
+        // 4. Guardar propiedad
+        instructions.add(MIPSInstruction.loadStore(
+                OpCode.SW,
+                valueReg,
+                propOffset + "(" + objReg + ")"
+        ));
     }
 
     /**
@@ -1331,19 +1477,58 @@ public class MIPSGenerator {
 
     /**
      * Genera creación de objeto
+     * Genera: obj = new ClassName(params)
+     * Llama constructor de superclase primero
      */
     private void generateNew(TACInstruction tac) {
         String result = tac.getResult();
         String className = tac.getArg1();
         List<String> params = tac.getParams();
 
+        allocator.setLoadObject(true);
         instructions.add(MIPSInstruction.comment("new " + className));
-        generateParameters(params);
-        instructions.add(MIPSInstruction.jump(OpCode.JAL, className + "_constructor"));
 
-        String resultReg = allocator.getReg(result);
-        instructions.add(MIPSInstruction.move(resultReg, Register.V0.getName()));
-        allocator.markDirty(resultReg);
+        Symbol classSymbol = tacGenerator.getSymbol(className);
+        if (classSymbol == null) {
+            instructions.add(MIPSInstruction.comment("ERROR: Class not found: " + className));
+            return;
+        }
+
+        int objectSize = calculateObjectSizeWithInheritance(classSymbol);
+
+        // Reservar memoria
+        instructions.add(MIPSInstruction.li("$a0", objectSize));
+        instructions.add(MIPSInstruction.li("$v0", 9));
+        instructions.add(MIPSInstruction.syscall());
+
+        String objReg = allocator.getReg(result);
+        instructions.add(MIPSInstruction.move(objReg, "$v0"));
+
+        // Registrar manualmente en el allocator que 'result' está en $s0
+        allocator.forceRegisterMapping(result, objReg);
+
+        // Inicializar propiedades
+        initializeObjectProperties(objReg, classSymbol);
+
+        // Llamar constructor si existe
+        if (hasConstructor(classSymbol)) {
+            // Preparar this en $a0
+            instructions.add(MIPSInstruction.move("$a0", objReg));
+
+            // Preparar parámetros en $a1, $a2, $a3
+            Register[] argRegs = {Register.A1, Register.A2, Register.A3};
+            for (int i = 0; i < params.size() && i < 3; i++) {
+                String paramReg = allocator.getReg(params.get(i));
+                instructions.add(MIPSInstruction.move(argRegs[i].getName(), paramReg));
+            }
+
+            // Llamar constructor
+            allocator.saveTemporaries();
+            instructions.add(MIPSInstruction.jump(OpCode.JAL, className + "_constructor"));
+
+            // El objeto sigue en $sx, no necesita restauración
+        }
+        allocator.setLoadObject(false);
     }
 
     /**
@@ -1374,41 +1559,56 @@ public class MIPSGenerator {
 
     /**
      * Genera prólogo de función
-     * MEJORADO: Carga parámetros desde $a0-$a3
+     * Carga parámetros desde $a0-$a3
      */
     private void generateFunctionProlog(TACInstruction tac) {
-        String functionName = tac.getLabel();
-        currentFunction = functionName;
+        String fn = tac.getLabel();
+        currentFunction = fn;
 
-        instructions.add(MIPSInstruction.label(functionName));
+        Symbol f = tacGenerator.getSymbol(fn);
+        boolean isMethod = f != null && f.getEnclosingClassName() != null;
 
-        // Obtener información de la función
-        Symbol funcSym = tacGenerator.getSymbol(functionName);
-        int paramCount = funcSym != null ? funcSym.getParamCount() : 0;
+        if (isMethod)
+            fn = f.getEnclosingClassName() + "_" + fn;
 
-        int localSpace = calculateLocalSpace();
-        int frameSize = 8 + localSpace;
+        instructions.add(MIPSInstruction.label(fn));
 
-        // Crear stack frame
+        // Calcular espacios
+        int frameSize = 8 + calculateLocalSpace();
+
+        // Crear frame
         instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$sp", "$sp", -frameSize));
-        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$fp", (frameSize - 8) + "($sp)"));
-        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$ra", (frameSize - 4) + "($sp)"));
+
+        // saved fp y saved ra
+        instructions.add(MIPSInstruction.loadStore(
+                OpCode.SW, "$fp", (frameSize - 8) + "($sp)"
+        ));
+
+        instructions.add(MIPSInstruction.loadStore(
+                OpCode.SW, "$ra", (frameSize - 4) + "($sp)"
+        ));
+
         instructions.add(MIPSInstruction.move("$fp", "$sp"));
 
-        // NUEVO: Guardar parámetros en el stack frame
+        assert f != null;
+        int paramCount = f.getParamCount() + (isMethod ? 1 : 0);
+        // Guardar parámetros en el stack frame
         Register[] argRegs = {Register.A0, Register.A1, Register.A2, Register.A3};
+        int baseOffset = 8; // Después de $fp y $ra guardados
+
         for (int i = 0; i < Math.min(paramCount, 4); i++) {
-            // Guardar $aX en su posición en el frame
-            int offset = i * 4;
+            int offset = baseOffset + (i * 4);
             instructions.add(MIPSInstruction.loadStore(
                     OpCode.SW,
                     argRegs[i].getName(),
-                    offset + "($fp)"
+                    offset + "($sp)"  // Relativo a $sp, NO a $fp
             ));
         }
 
+        // Reset allocator
         allocator.reset();
     }
+
 
     /**
      * Genera epílogo de función
@@ -1429,6 +1629,332 @@ public class MIPSGenerator {
         instructions.add(MIPSInstruction.jumpReg(Register.RA.getName()));
 
         currentFunction = null;
+    }
+
+    private void generateMethodCall(TACInstruction tac) {
+        String methodAccess = tac.getArg1();
+        List<String> params = tac.getParams();
+
+
+        int dot = methodAccess.indexOf('.');
+        String obj = methodAccess.substring(0, dot);
+        String method = methodAccess.substring(dot + 1);
+
+
+        instructions.add(MIPSInstruction.comment("Method call: " + methodAccess));
+
+
+        String objReg = allocator.getReg(obj);
+        Symbol objSym = getObjectSymbol(obj);
+        if (objSym == null) {
+            instructions.add(MIPSInstruction.comment("ERROR: object has no type"));
+            return;
+        }
+
+
+        String targetClass = findClassWithMethod(objSym.getName(), method);
+        if (targetClass == null) targetClass = objSym.getName();
+
+
+        allocator.saveTemporaries();
+
+
+        instructions.add(MIPSInstruction.move("$a0", objReg));
+
+
+        Register[] argRegs = {Register.A1, Register.A2, Register.A3};
+        for (int i = 0; i < Math.min(params.size(), 3); i++) {
+            String r = allocator.getReg(params.get(i));
+            instructions.add(MIPSInstruction.move(argRegs[i].getName(), r));
+        }
+
+
+        instructions.add(MIPSInstruction.jump(OpCode.JAL, targetClass + "_" + method));
+
+
+        allocator.reset();
+    }
+
+    private void generateMethodCallWithReturn(TACInstruction tac) {
+        String result = tac.getResult();
+        String methodAccess = tac.getArg1(); // "obj.method"
+        List<String> params = tac.getParams();
+
+        int dotIndex = methodAccess.indexOf('.');
+        String objName = methodAccess.substring(0, dotIndex);
+        String methodName = methodAccess.substring(dotIndex + 1);
+
+        instructions.add(MIPSInstruction.comment("Method call with return: " + result + " = " + methodAccess));
+
+        // Obtener registro del objeto
+        String objReg = allocator.getReg(objName);
+
+        // Obtener clase del objeto
+        Symbol objSymbol = tacGenerator.getSymbol(objName);
+        if (objSymbol == null) {
+            instructions.add(MIPSInstruction.comment("ERROR: Object not found: " + objName));
+            return;
+        }
+
+        String className = objSymbol.getType();
+
+        // Buscar metodo en la clase o superclases
+        String actualClassName = findClassWithMethod(className, methodName);
+        if (actualClassName == null) {
+            actualClassName = className;
+        }
+
+        // Preparar parámetros: this primero ($a0), luego params
+        instructions.add(MIPSInstruction.move("$a0", objReg));
+
+        Register[] argRegs = {Register.A1, Register.A2, Register.A3};
+        for (int i = 0; i < params.size() && i < 3; i++) {
+            String paramReg = allocator.getReg(params.get(i));
+            instructions.add(MIPSInstruction.move(argRegs[i].getName(), paramReg));
+        }
+
+        // Llamar metodo: ClassName_methodName
+        allocator.saveTemporaries();
+        instructions.add(MIPSInstruction.jump(OpCode.JAL, actualClassName + "_" + methodName));
+
+        // Capturar retorno
+        String resultReg = allocator.getReg(result);
+        instructions.add(MIPSInstruction.move(resultReg, "$v0"));
+        allocator.markDirty(resultReg);
+    }
+
+    private void initializeObjectProperties(String objReg, Symbol classSymbol) {
+        if (classSymbol == null) return;
+
+        // Primero inicializar propiedades de la superclase
+        if (classSymbol.getSuperClass() != null) {
+            Symbol superClass = tacGenerator.getSymbol(classSymbol.getSuperClass());
+            if (superClass != null) {
+                initializeObjectProperties(objReg, superClass);
+            }
+        }
+
+        // Luego inicializar propiedades de esta clase
+        if (classSymbol.getMembers() == null) return;
+
+        for (Symbol member : classSymbol.getMembers().values()) {
+            // Solo variables con valores por defecto
+            if (member.getKind() == Symbol.Kind.VARIABLE ||
+                    member.getKind() == Symbol.Kind.CONSTANT) {
+
+                // Buscar si tiene inicialización en el TAC
+                String defaultValue = findPropertyDefaultValue(classSymbol.getName(), member.getName());
+                if (defaultValue != null) {
+                    int offset = getPropertyOffsetWithInheritance(classSymbol, member.getName());
+
+                    // Cargar valor por defecto
+                    String tempReg = "$t9";
+
+                    if (isStringLiteral(defaultValue)) {
+                        String label = stringLiterals.get(defaultValue);
+                        instructions.add(MIPSInstruction.la(tempReg, label));
+                    } else if (isImmediate(defaultValue)) {
+                        instructions.add(MIPSInstruction.li(tempReg, Integer.parseInt(defaultValue)));
+                    } else {
+                        String valueReg = allocator.getReg(defaultValue);
+                        instructions.add(MIPSInstruction.move(tempReg, valueReg));
+                    }
+
+                    // Guardar en objeto
+                    instructions.add(MIPSInstruction.loadStore(
+                            OpCode.SW,
+                            tempReg,
+                            offset + "(" + objReg + ")"
+                    ));
+                }
+            }
+        }
+    }
+
+    private String findPropertyDefaultValue(String className, String propName) {
+        List<TACInstruction> tacInstructions = tacGenerator.getInstructions();
+        boolean inClass = false;
+
+        for (TACInstruction tac : tacInstructions) {
+            // Detectar entrada a la clase
+            if (tac.getOp() == TACInstruction.OpType.LABEL_CLASS &&
+                    tac.getLabel().equals(className)) {
+                inClass = true;
+                continue;
+            }
+
+            // Detectar salida de la clase
+            if (tac.getOp() == TACInstruction.OpType.END_CLASS) {
+                inClass = false;
+                continue;
+            }
+
+            // Buscar asignación dentro de la clase pero fuera de funciones
+            if (inClass && tac.getOp() == TACInstruction.OpType.ASSIGN) {
+                if (tac.getResult() != null && tac.getResult().equals(propName)) {
+                    return tac.getArg1();
+                }
+            }
+
+            // No buscar dentro de funciones
+            if (tac.getOp() == TACInstruction.OpType.LABEL_FUNCTION) {
+                // Skip hasta END
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Busca en qué clase (actual o superclase) está definido un metodo
+     */
+    private String findClassWithMethod(String className, String methodName) {
+        Symbol classSymbol = tacGenerator.getSymbol(className);
+        if (classSymbol == null) return null;
+
+        // Buscar en la clase actual
+        if (classSymbol.getMembers() != null) {
+            for (Symbol member : classSymbol.getMembers().values()) {
+                if (member.getKind() == Symbol.Kind.FUNCTION &&
+                        member.getName().equals(methodName)) {
+                    return className;
+                }
+            }
+        }
+
+        // Buscar en superclase
+        if (classSymbol.getSuperClass() != null) {
+            return findClassWithMethod(classSymbol.getSuperClass(), methodName);
+        }
+
+        return null;
+    }
+
+    /**
+     * Calcula offset de propiedad considerando herencia
+     * Propiedades heredadas van primero
+     */
+    private int getPropertyOffsetWithInheritance(Symbol classSymbol, String propName) {
+        if (classSymbol == null) return 0;
+
+        // Construir lista ordenada de propiedades (heredadas primero)
+        List<Symbol> orderedProperties = new ArrayList<>();
+        collectPropertiesInOrder(classSymbol, orderedProperties);
+
+        int offset = 0;
+        for (Symbol prop : orderedProperties) {
+            if (prop.getName().equals(propName)) {
+                return offset;
+            }
+            offset += tacGenerator.typeSize(prop.getType());
+        }
+
+        return 0;
+    }
+
+    private void collectPropertiesInOrder(Symbol classSymbol, List<Symbol> result) {
+        if (classSymbol == null) return;
+
+        // Primero propiedades de la superclase
+        if (classSymbol.getSuperClass() != null) {
+            Symbol superClass = tacGenerator.getSymbol(classSymbol.getSuperClass());
+            collectPropertiesInOrder(superClass, result);
+        }
+
+        // Luego propiedades de esta clase
+        if (classSymbol.getMembers() != null) {
+            for (Symbol member : classSymbol.getMembers().values()) {
+                if (member.getKind() == Symbol.Kind.VARIABLE ||
+                        member.getKind() == Symbol.Kind.CONSTANT) {
+                    result.add(member);
+                }
+            }
+        }
+    }
+
+    /**
+     * Calcula tamaño del objeto incluyendo propiedades heredadas
+     */
+    private int calculateObjectSizeWithInheritance(Symbol classSymbol) {
+        if (classSymbol == null) return 8;
+
+        int totalSize = 0;
+
+        // Primero sumar tamaño de superclase
+        if (classSymbol.getSuperClass() != null) {
+            Symbol superClass = tacGenerator.getSymbol(classSymbol.getSuperClass());
+            if (superClass != null) {
+                totalSize += calculateObjectSizeWithInheritance(superClass);
+            }
+        }
+
+        // Luego sumar propiedades de esta clase
+        if (classSymbol.getMembers() != null) {
+            for (Symbol member : classSymbol.getMembers().values()) {
+                if (member.getKind() == Symbol.Kind.VARIABLE ||
+                        member.getKind() == Symbol.Kind.CONSTANT) {
+
+                    int size = tacGenerator.typeSize(member.getType());
+                    totalSize += size;
+                }
+            }
+        }
+
+        // Alinear a múltiplo de 4
+        if (totalSize % 4 != 0) {
+            totalSize += 4 - (totalSize % 4);
+        }
+
+        return totalSize > 0 ? totalSize : 8;
+    }
+
+    /**
+     * Verifica si una clase tiene constructor definido
+     */
+    private boolean hasConstructor(Symbol classSymbol) {
+        if (classSymbol == null || classSymbol.getMembers() == null) {
+            return false;
+        }
+
+        for (Symbol member : classSymbol.getMembers().values()) {
+            if (member.getKind() == Symbol.Kind.FUNCTION &&
+                    member.getName().equals("constructor")) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Obtiene el símbolo de un objeto (puede ser 'this' o una variable)
+     */
+    private Symbol getObjectSymbol(String objName) {
+        if (objName.equals("this")) {
+            // 'this' refiere al objeto actual, necesitamos la clase actual
+            if (currentFunction != null) {
+                Symbol funcSym = tacGenerator.getSymbol(currentFunction);
+                if (funcSym != null && funcSym.getEnclosingClassName() != null) {
+                    String className = funcSym.getEnclosingClassName();
+                    return tacGenerator.getSymbol(className);
+                }
+            }
+            return null;
+        }
+
+        // Caso 2: es variable declarada (busca símbolo)
+        Symbol varSym = tacGenerator.getSymbol(objName);
+        if (varSym != null) {
+            return tacGenerator.getSymbol(varSym.getType());
+        }
+
+        // Caso 3: es un temporal -> debes tener un mapa tempTypeMap
+        if (tempTypeMap.containsKey(objName)) {
+            return tacGenerator.getSymbol(tempTypeMap.get(objName));
+        }
+
+        return null;
     }
 
     /**

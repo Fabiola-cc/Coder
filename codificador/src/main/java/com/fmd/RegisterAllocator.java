@@ -45,6 +45,9 @@ public class RegisterAllocator {
     private Map<String, Integer> tempOffsets;
     private int nextTempOffset;
 
+    // Flag para registros
+    private Boolean loadObject;
+
     // ============================================
     // CONSTRUCTOR
     // ============================================
@@ -58,6 +61,7 @@ public class RegisterAllocator {
         this.instructions = new ArrayList<>();
         this.tempOffsets = new HashMap<>();
         this.nextTempOffset = 1000;
+        this.loadObject = false;
 
         // Inicializar registros temporales como libres
         for (int i = TEMP_REGISTERS.length - 1; i >= 0; i--) {
@@ -90,6 +94,20 @@ public class RegisterAllocator {
         }
 
         // PASO 2: Si hay registros libres, tomar uno
+        // 1) ¿Es un objeto? -> ponerlo en un $sX
+        if (loadObject) {
+            for (int i = 1; i < SAVED_REGISTERS.length; i++) { // $s1..$s7
+                String reg = "$s" + i;
+                RegisterDescriptor desc = registerState.get(reg);
+                if (desc.getVariable() == null) {
+                    assignRegister(variable, reg);
+                    return reg;
+                }
+            }
+            // si no hay espacio, entonces fallback a spill
+        }
+
+        // 2) Si NO es objeto → usar temporales $t0–$t7
         if (!freeRegisters.isEmpty()) {
             String reg = freeRegisters.pop();
             assignRegister(variable, reg);
@@ -424,6 +442,21 @@ public class RegisterAllocator {
     }
 
     /**
+     * Fuerza un mapeo específico de variable a registro
+     * Usado para objetos que deben estar en registros salvados
+     */
+    public void forceRegisterMapping(String var, String reg) {
+        if (variableToRegister.containsKey(var)) {
+            String oldReg = variableToRegister.get(var);
+            registerState.remove(oldReg);
+        }
+
+        variableToRegister.put(var, reg);
+        registerState.put(reg, new RegisterDescriptor(var));
+        markDirty(reg); // Marcar como dirty
+    }
+
+    /**
      * Guarda todos los registros $s (caller-saved en convención MIPS)
      */
     public void saveSavedRegisters() {
@@ -486,5 +519,9 @@ public class RegisterAllocator {
 
     public int getCurrentLine() {
         return currentLine;
+    }
+
+    public void setLoadObject(Boolean loadObject) {
+        this.loadObject = loadObject;
     }
 }
