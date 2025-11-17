@@ -6,6 +6,7 @@ import com.fmd.modules.MIPSInstruction;
 import com.fmd.modules.MIPSInstruction.OpCode;
 import com.fmd.modules.Register;
 import com.fmd.modules.Symbol;
+import jakarta.servlet.ServletOutputStream;
 
 /**
  * Generador de código MIPS MEJORADO
@@ -391,7 +392,7 @@ public class MIPSGenerator {
                 break;
 
             case BINARY_OP:
-                generateArithmetic(tac);
+                generateBinaryOp(tac);
                 break;
 
             case UNARY_OP:
@@ -703,7 +704,154 @@ public class MIPSGenerator {
         allocator.freeRegister(baseReg);
     }
 
+    /**
+     * DISPATCHER PRINCIPAL para operaciones binarias
+     * Detecta el tipo de operación y delega al generador apropiado
+     *
+     * Casos:
+     * 1. Operadores relacionales (<, >, ==, etc.) → Comparación
+     * 2. Operadores aritméticos con strings (+) → Concatenación
+     * 3. Operadores aritméticos normales (+, -, *, /) → Aritmética
+     * 4. Operadores lógicos (&&, ||) → Ya manejados en TAC
+     */
+    private void generateBinaryOp(TACInstruction tac) {
+        String op = tac.getOperator();
+        String arg1 = tac.getArg1();
+        String arg2 = tac.getArg2();
 
+        System.out.println(arg1 + " " + op + " " + arg2);
+
+        // CASO 1: Operadores de comparación/relacionales
+        if (isComparisonOperator(op)) {
+            System.out.println("IS COMPARISON");
+            generateComparison(tac);
+            return;
+        }
+
+        // CASO 2: Concatenación de strings (solo con +)
+        if (op.equals("+") && isStringOperation(arg1, arg2)) {
+            System.out.println("IS STRING OPERATION");
+            generateStringConcatenation(tac);
+            return;
+        }
+
+        // CASO 3: Operadores aritméticos normales
+        if (isArithmeticOperator(op)) {
+            System.out.println("IS ARITHMETIC OPERATION");
+            generateArithmetic(tac);
+            return;
+        }
+
+        // CASO 4: Operador no soportado
+        instructions.add(MIPSInstruction.comment("Unsupported binary operator: " + op));
+    }
+
+    /**
+     * Verifica si es un operador de comparación
+     */
+    private boolean isComparisonOperator(String op) {
+        return op.equals("<") || op.equals(">") || op.equals("<=") ||
+                op.equals(">=") || op.equals("==") || op.equals("!=");
+    }
+
+    /**
+     * Verifica si es un operador aritmético
+     */
+    private boolean isArithmeticOperator(String op) {
+        return op.equals("+") || op.equals("-") || op.equals("*") ||
+                op.equals("/") || op.equals("%");
+    }
+
+    /**
+     * Detecta si la operación involucra strings
+     * MEJORADO: Rastrea temporales que contienen strings
+     */
+    private boolean isStringOperation(String arg1, String arg2) {
+        // Caso 1: Literal de string directo
+        if (isStringLiteral(arg1) || isStringLiteral(arg2)) {
+            return true;
+        }
+
+        // Caso 2: Variable con tipo string conocido
+        Symbol sym1 = tacGenerator.getSymbol(arg1);
+        Symbol sym2 = tacGenerator.getSymbol(arg2);
+
+        if (sym1 != null && sym1.getType() != null && sym1.getType().equals("string")) {
+            return true;
+        }
+        if (sym2 != null && sym2.getType() != null && sym2.getType().equals("string")) {
+            return true;
+        }
+
+        // Caso 3: NUEVO - Rastrear temporales que contienen strings
+        if (temporalContainsString(arg1) || temporalContainsString(arg2)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Verifica si un temporal contiene un string
+     * Busca en las instrucciones TAC previas para ver si fue asignado desde un string
+     */
+    private boolean temporalContainsString(String temporal) {
+        if (temporal == null || !temporal.matches("^t\\d+$")) {
+            return false;
+        }
+
+        // Buscar en las instrucciones TAC la asignación de este temporal
+        for (TACInstruction tac : tacGenerator.getInstructions()) {
+            if (tac.getOp() == TACInstruction.OpType.ASSIGN &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(temporal)) {
+
+                String source = tac.getArg1();
+
+                // Si se asignó desde un string literal
+                if (isStringLiteral(source)) {
+                    return true;
+                }
+
+                // Si se asignó desde una variable string
+                Symbol sym = tacGenerator.getSymbol(source);
+                if (sym != null && sym.getType() != null && sym.getType().equals("string")) {
+                    return true;
+                }
+
+                // Si se asignó desde otro temporal que es string (recursivo)
+                if (source != null && source.matches("^t\\d+$")) {
+                    return temporalContainsString(source);
+                }
+            }
+
+            // Si fue resultado de una concatenación previa
+            if (tac.getOp() == TACInstruction.OpType.BINARY_OP &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(temporal) &&
+                    tac.getOperator().equals("+")) {
+
+                // Si cualquiera de sus operandos era string, el resultado es string
+                if (isStringLiteral(tac.getArg1()) || isStringLiteral(tac.getArg2())) {
+                    return true;
+                }
+
+                if (temporalContainsString(tac.getArg1()) || temporalContainsString(tac.getArg2())) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Verifica si un valor es un string literal
+     */
+    private boolean isStringLiteral(String value) {
+        if (value == null) return false;
+        return value.startsWith("\"") && value.endsWith("\"");
+    }
 
 
     /**
@@ -739,6 +887,160 @@ public class MIPSGenerator {
         }
 
         allocator.markDirty(resultReg);
+    }
+
+    /**
+     * Genera comparaciones: result = arg1 op arg2
+     * Retorna 1 (true) o 0 (false) según la comparación
+     */
+    private void generateComparison(TACInstruction tac) {
+        String result = tac.getResult();
+        String arg1 = tac.getArg1();
+        String arg2 = tac.getArg2();
+        String op = tac.getOperator();
+
+        String resultReg = allocator.getReg(result);
+        String arg1Reg = allocator.getReg(arg1);
+
+        String arg2Reg;
+        boolean needsFree = false;
+
+        // Si arg2 es inmediato, cargarlo a registro
+        if (isImmediate(arg2)) {
+            arg2Reg = allocator.getReg("temp_cmp_imm");
+            instructions.add(MIPSInstruction.li(arg2Reg, Integer.parseInt(arg2)));
+            needsFree = true;
+        } else {
+            arg2Reg = allocator.getReg(arg2);
+        }
+
+        // Generar comparación según el operador
+        switch (op) {
+            case "<":
+                // result = (arg1 < arg2) ? 1 : 0
+                instructions.add(MIPSInstruction.typeR(OpCode.SLT, resultReg, arg1Reg, arg2Reg));
+                break;
+
+            case "<=":
+                // result = !(arg2 < arg1)
+                instructions.add(MIPSInstruction.typeR(OpCode.SLT, resultReg, arg2Reg, arg1Reg));
+                instructions.add(MIPSInstruction.typeI(OpCode.XORI, resultReg, resultReg, 1));
+                break;
+
+            case ">":
+                // result = (arg2 < arg1)
+                instructions.add(MIPSInstruction.typeR(OpCode.SLT, resultReg, arg2Reg, arg1Reg));
+                break;
+
+            case ">=":
+                // result = !(arg1 < arg2)
+                instructions.add(MIPSInstruction.typeR(OpCode.SLT, resultReg, arg1Reg, arg2Reg));
+                instructions.add(MIPSInstruction.typeI(OpCode.XORI, resultReg, resultReg, 1));
+                break;
+
+            case "==":
+                // result = (arg1 == arg2) ? 1 : 0
+                String tempEq = allocator.getReg("temp_eq");
+                instructions.add(MIPSInstruction.typeR(OpCode.SUB, tempEq, arg1Reg, arg2Reg));
+                instructions.add(MIPSInstruction.typeR(OpCode.SEQ, resultReg, tempEq, "$zero"));
+                allocator.freeRegister(tempEq);
+                break;
+
+            case "!=":
+                // result = (arg1 != arg2) ? 1 : 0
+                String tempNe = allocator.getReg("temp_ne");
+                instructions.add(MIPSInstruction.typeR(OpCode.SUB, tempNe, arg1Reg, arg2Reg));
+                instructions.add(MIPSInstruction.typeR(OpCode.SNE, resultReg, tempNe, "$zero"));
+                allocator.freeRegister(tempNe);
+                break;
+
+            default:
+                instructions.add(MIPSInstruction.comment("Unknown comparison: " + op));
+        }
+
+        if (needsFree) {
+            allocator.freeRegister(arg2Reg);
+        }
+
+        allocator.markDirty(resultReg);
+    }
+
+    /**
+     * Genera concatenación de strings: result = arg1 + arg2
+     * Convierte integers a strings automáticamente
+     */
+    private void generateStringConcatenation(TACInstruction tac) {
+        String result = tac.getResult();
+        String arg1 = tac.getArg1();
+        String arg2 = tac.getArg2();
+
+        instructions.add(MIPSInstruction.comment("String concat: " + result + " = " + arg1 + " + " + arg2));
+
+        String arg1Reg = prepareStringArgument(arg1);
+        String arg2Reg = prepareStringArgument(arg2);
+
+        // Colocar argumentos en $a0 y $a1
+        instructions.add(MIPSInstruction.move("$a0", arg1Reg));
+        instructions.add(MIPSInstruction.move("$a1", arg2Reg));
+
+        // Llamar función de concatenación
+        allocator.saveTemporaries();
+        instructions.add(MIPSInstruction.jump(OpCode.JAL, "concat_strings"));
+
+        // El resultado está en $v0
+        String resultReg = allocator.getReg(result);
+        instructions.add(MIPSInstruction.move(resultReg, "$v0"));
+        allocator.markDirty(resultReg);
+    }
+
+    /**
+     * Prepara un argumento para concatenación
+     * Convierte integers a strings si es necesario
+     */
+    private String prepareStringArgument(String arg) {
+        // Caso 1: String literal
+        if (isStringLiteral(arg)) {
+            String label = stringLiterals.get(arg);
+            String reg = allocator.getReg("temp_str_lit");
+            instructions.add(MIPSInstruction.la(reg, label));
+            return reg;
+        }
+
+        // Caso 2: Verificar tipo del argumento
+        Symbol sym = tacGenerator.getSymbol(arg);
+
+        // Caso 2a: Es un entero que necesita conversión
+        if (sym != null && sym.getType() != null && sym.getType().equals("integer")) {
+            String intReg = allocator.getReg(arg);
+
+            instructions.add(MIPSInstruction.move("$a0", intReg));
+            allocator.saveTemporaries();
+            instructions.add(MIPSInstruction.jump(OpCode.JAL, "int_to_string"));
+
+            String strReg = allocator.getReg("temp_int_str");
+            instructions.add(MIPSInstruction.move(strReg, "$v0"));
+
+            return strReg;
+        }
+
+        // Caso 2b: Es inmediato (número literal)
+        if (isImmediate(arg)) {
+            String intReg = allocator.getReg("temp_imm_lit");
+            instructions.add(MIPSInstruction.li(intReg, Integer.parseInt(arg)));
+
+            instructions.add(MIPSInstruction.move("$a0", intReg));
+            allocator.saveTemporaries();
+            instructions.add(MIPSInstruction.jump(OpCode.JAL, "int_to_string"));
+
+            String strReg = allocator.getReg("temp_int_str_lit");
+            instructions.add(MIPSInstruction.move(strReg, "$v0"));
+
+            allocator.freeRegister(intReg);
+            return strReg;
+        }
+
+        // Caso 3: Variable string normal o temporal
+        return allocator.getReg(arg);
     }
 
     /**
@@ -933,6 +1235,7 @@ public class MIPSGenerator {
 
     /**
      * Genera prólogo de función
+     * MEJORADO: Carga parámetros desde $a0-$a3
      */
     private void generateFunctionProlog(TACInstruction tac) {
         String functionName = tac.getLabel();
@@ -940,13 +1243,30 @@ public class MIPSGenerator {
 
         instructions.add(MIPSInstruction.label(functionName));
 
+        // Obtener información de la función
+        Symbol funcSym = tacGenerator.getSymbol(functionName);
+        int paramCount = funcSym != null ? funcSym.getParamCount() : 0;
+
         int localSpace = calculateLocalSpace();
         int frameSize = 8 + localSpace;
 
-        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, Register.SP.getName(), Register.SP.getName(), -frameSize));
-        instructions.add(MIPSInstruction.loadStore(OpCode.SW, Register.FP.getName(), (frameSize - 8) + "(" + Register.SP.getName() + ")"));
-        instructions.add(MIPSInstruction.loadStore(OpCode.SW, Register.RA.getName(), (frameSize - 4) + "(" + Register.SP.getName() + ")"));
-        instructions.add(MIPSInstruction.move(Register.FP.getName(), Register.SP.getName()));
+        // Crear stack frame
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$sp", "$sp", -frameSize));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$fp", (frameSize - 8) + "($sp)"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$ra", (frameSize - 4) + "($sp)"));
+        instructions.add(MIPSInstruction.move("$fp", "$sp"));
+
+        // NUEVO: Guardar parámetros en el stack frame
+        Register[] argRegs = {Register.A0, Register.A1, Register.A2, Register.A3};
+        for (int i = 0; i < Math.min(paramCount, 4); i++) {
+            // Guardar $aX en su posición en el frame
+            int offset = i * 4;
+            instructions.add(MIPSInstruction.loadStore(
+                    OpCode.SW,
+                    argRegs[i].getName(),
+                    offset + "($fp)"
+            ));
+        }
 
         allocator.reset();
     }
@@ -1165,4 +1485,6 @@ public class MIPSGenerator {
         addDataVariable("true_str", ".asciiz \"true\"");
         addDataVariable("false_str", ".asciiz \"false\"");
     }
+
+
 }

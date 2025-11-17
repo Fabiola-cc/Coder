@@ -32,6 +32,7 @@ public class MIPSInstruction {
         XOR,    // xor $rd, $rs, $rt
         NOR,    // nor $rd, $rs, $rt
         NOT,    // not $rd, $rs (pseudo: nor $rd, $rs, $zero)
+        XORI,
 
         // Shifts
         SLL,   // sll $rd, $rt, shamt
@@ -290,7 +291,7 @@ public class MIPSInstruction {
                 break;
 
             // Tipo I con inmediato: addi $rt, $rs, imm
-            case ADDI: case SUBI: case ANDI: case ORI: case SLTI:
+            case ADDI: case SUBI: case ANDI: case ORI: case SLTI: case XORI:
                 sb.append(rd).append(", ").append(rs).append(", ").append(immediate);
                 break;
 
