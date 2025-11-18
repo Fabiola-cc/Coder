@@ -5,8 +5,9 @@ true_str: .asciiz "true"
 false_str: .asciiz "false"
 concat_buffer: .space 512
 int_buffer: .space 32
-str_0: .asciiz "Hola "
-str_1: .asciiz "Juan"
+str_0: .asciiz "\n"
+.align 2
+arr: .space 16  # Array de 4 elementos
 
 
 .text
@@ -14,75 +15,59 @@ str_1: .asciiz "Juan"
 main:
     move    $fp, $sp
 
-    la      $t1, str_1
-    li      $t0, 25
-    # new Persona
-    li      $a0, 12
-    li      $v0, 9
-    syscall 
-    move    $s1, $v0
-    move    $a0, $s1
-    move    $a1, $t1
-    move    $a2, $t0
-    jal     Persona_constructor
-    # Property get: t3 = p.edad
-    lw      $t1, 8($s1)
+    li      $t0, 10
+    # Array store: arr[0] = t1
+    sw      $t0, arr+0
+    li      $t0, 20
+    # Array store: arr[1] = t1
+    sw      $t0, arr+4
+    li      $t0, 30
+    # Array store: arr[2] = t1
+    sw      $t0, arr+8
+    li      $t0, 1
+    # Array load: t2 = arr[t1]
+    sll     $t2, $t0, 2
+    la      $t3, arr
+    add     $t2, $t3, $t2
+    lw      $t1, 0($t2)
+    move    $a0, $t0
+    jal     print
+    la      $t1, str_0
     la      $a0, str_0
     li      $v0, 4
     syscall 
+    li      $t1, 2
+    move    $t0, $t1
+    # Array load: t2 = arr[i]
+    sll     $t2, $t0, 2
+    la      $t3, arr
+    add     $t2, $t3, $t2
+    lw      $t1, 0($t2)
     move    $a0, $t0
     jal     print
+    la      $t1, str_0
+    la      $a0, str_0
+    li      $v0, 4
+    syscall 
+    li      $t1, 99
+    # Array store: arr[0] = t2
+    sw      $t1, arr+0
+    li      $t1, 0
+    # Array load: t1 = arr[t2]
+    sll     $t2, $t1, 2
+    la      $t3, arr
+    add     $t2, $t3, $t2
+    lw      $t0, 0($t2)
+    move    $a0, $t1
+    jal     print
+    la      $t1, str_0
+    la      $a0, str_0
+    li      $v0, 4
+    syscall 
 
     # Fin del programa
     li      $v0, 10
     syscall
-
-    # Class Persona
-    # end Class Persona
-
-Persona_saludar:
-    addi    $sp, $sp, -12
-    sw      $fp, 4($sp)
-    sw      $ra, 8($sp)
-    move    $fp, $sp
-    sw      $a0, 0($fp)
-    la      $t0, str_0
-    # Property get: t2 = this.nombre
-    lw      $t1, 0($a0)
-    # String concat: t3 = t1 + t2
-    move    $a0, $t0
-    move    $a1, $t1
-    jal     concat_strings
-    move    $t1, $v0
-    move    $v0, $t1
-    j       saludar_epilog
-saludar_epilog:
-    move    $sp, $fp
-    lw      $fp, 4($sp)
-    lw      $ra, 8($sp)
-    addi    $sp, $sp, 12
-    jr      $ra
-
-Persona_constructor:
-    addi    $sp, $sp, -28
-    sw      $fp, 20($sp)
-    sw      $ra, 24($sp)
-    move    $fp, $sp
-    sw      $a0, 0($fp)
-    sw      $a1, 4($fp)
-    sw      $a2, 8($fp)
-    # Property set: this.nombre = nombre
-    lw      $t8, 0($fp)
-    sw      $t0, 0($t8)
-    # Property set: this.edad = edad
-    lw      $t8, 0($fp)
-    sw      $t1, 8($t8)
-constructor_epilog:
-    move    $sp, $fp
-    lw      $fp, 20($sp)
-    lw      $ra, 24($sp)
-    addi    $sp, $sp, 28
-    jr      $ra
 
 print:
     addi    $sp, $sp, -4

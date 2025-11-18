@@ -1,16 +1,17 @@
-class Persona {
-    let nombre: string;
-    let edad: integer;
+// Caso 1: Array global con índice constante
+let arr: integer[] = [10, 20, 30];
+print(arr[1]);  // Debería imprimir 20
 
-    function constructor(nombre: string, edad: integer) {
-        this.nombre = nombre;
-        this.edad = edad;
-    }
+print("\n");
 
-    function saludar(): string {
-        return "Hola " + this.nombre;
-    }
-}
+// Caso 2: Array con índice variable
+let i: integer = 2;
+print(arr[i]);  // Debería imprimir 30
 
-let p: Persona = new Persona("Juan", 25);
-print(p.edad);
+print("\n");
+
+// Caso 3: Asignación
+arr[0] = 99;
+print(arr[0]);  // Debería imprimir 99
+
+print("\n");

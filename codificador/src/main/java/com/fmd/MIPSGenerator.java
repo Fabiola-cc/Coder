@@ -662,9 +662,6 @@ public class MIPSGenerator {
     }
 
     /**
-     * Carga desde array: dest = arr[idx]
-     */
-    /**
      * Genera código MIPS para cargar dest = arr[index]
      * arrayAccess: "numbers[10]" o "matrix[i]"
      * dest: nombre de la variable destino (puede ser temporal)
@@ -673,10 +670,13 @@ public class MIPSGenerator {
         int openBracket = arrayAccess.indexOf('[');
         int closeBracket = arrayAccess.indexOf(']');
 
-        if (openBracket < 0 || closeBracket < 0) return;
+        if (openBracket < 0 || closeBracket < 0) {
+            instructions.add(MIPSInstruction.comment("ERROR: Invalid array access: " + arrayAccess));
+            return;
+        }
 
-        String arrayName = arrayAccess.substring(0, openBracket);
-        String index = arrayAccess.substring(openBracket + 1, closeBracket);
+        String arrayName = arrayAccess.substring(0, openBracket).trim();
+        String index = arrayAccess.substring(openBracket + 1, closeBracket).trim();
 
         Symbol arraySym = tacGenerator.getSymbol(arrayName);
         if (arraySym == null) {
@@ -684,16 +684,57 @@ public class MIPSGenerator {
             return;
         }
 
+        instructions.add(MIPSInstruction.comment("Array load: " + dest + " = " + arrayAccess));
+
         // Registro destino
         String destReg = allocator.getReg(dest);
 
-        // Registro base para la dirección del array
-        String baseReg = allocator.getReg("__arr_base_" + arrayName);
-        int baseOffset = arraySym.getOffset();
 
-        // 1) Obtener dirección base según sea local o global
+
+        // CASO 1: ÍNDICE CONSTANTE
+        if (isImmediate(index)) {
+            int idx = Integer.parseInt(index);
+            int elementOffset = idx * 4; // 4 bytes por elemento
+
+            if (arraySym.isLocal()) {
+                // LOCAL: cargar desde $fp + baseOffset + elementOffset
+                int baseOffset = arraySym.getOffset();
+                int totalOffset = baseOffset + elementOffset;
+
+                instructions.add(MIPSInstruction.loadStore(
+                        MIPSInstruction.OpCode.LW,
+                        destReg,
+                        totalOffset + "($fp)"
+                ));
+            } else {
+                // GLOBAL: usar label del array
+                instructions.add(MIPSInstruction.loadStore(
+                        MIPSInstruction.OpCode.LW,
+                        destReg,
+                        arrayName + "+" + elementOffset
+                ));
+            }
+
+            allocator.markDirty(destReg);
+            return;
+        }
+
+        // CASO 2: ÍNDICE VARIABLE
+        String indexReg = allocator.getReg(index);
+        String addrReg = allocator.getReg("__arr_addr");
+        String baseReg = allocator.getReg("__arr_base");
+
+        // Calcular offset del índice: offset = index * 4
+        instructions.add(MIPSInstruction.typeR(
+                MIPSInstruction.OpCode.SLL,
+                addrReg,
+                indexReg,
+                "2"  // shift left 2 = multiplicar por 4
+        ));
+
         if (arraySym.isLocal()) {
-            // LOCAL -> base = $fp + offset
+            // LOCAL: base = $fp + offset_base
+            int baseOffset = arraySym.getOffset();
             instructions.add(MIPSInstruction.typeI(
                     MIPSInstruction.OpCode.ADDI,
                     baseReg,
@@ -701,43 +742,11 @@ public class MIPSGenerator {
                     baseOffset
             ));
         } else {
-            // GLOBAL -> la base (label)
-            instructions.add(MIPSInstruction.la(
-                    baseReg,
-                    arraySym.getTacAddress()
-            ));
+            // GLOBAL: cargar dirección del label
+            instructions.add(MIPSInstruction.la(baseReg, arrayName));
         }
 
-        // 2) Índice inmediato
-        if (isImmediate(index)) {
-            int idx = Integer.parseInt(index);
-            int offset = idx * 4; // suponiendo elementSize = 4
-
-            // lw destReg, offset(baseReg)
-            instructions.add(MIPSInstruction.loadStore(
-                    MIPSInstruction.OpCode.LW,
-                    destReg,
-                    offset + "(" + baseReg + ")"
-            ));
-
-            allocator.freeRegister(baseReg);
-            allocator.markDirty(destReg);
-            return;
-        }
-
-        // 3) Índice en registro
-        String indexReg = allocator.getReg(index);
-        String addrReg  = allocator.getReg("__arr_addr_" + arrayName);
-
-        // offset = index * 4  -> sll addrReg, indexReg, 2
-        instructions.add(MIPSInstruction.typeR(
-                MIPSInstruction.OpCode.SLL,
-                addrReg,    // rd
-                indexReg,   // rs (we pass indexReg here)
-                "2"         // rt (shamt as string, matches your typeR usage)
-        ));
-
-        // addrReg = baseReg + offset  -> add addrReg, baseReg, addrReg
+        // Dirección efectiva = base + offset
         instructions.add(MIPSInstruction.typeR(
                 MIPSInstruction.OpCode.ADD,
                 addrReg,
@@ -745,14 +754,15 @@ public class MIPSGenerator {
                 addrReg
         ));
 
-        // lw destReg, 0(addrReg)
+
+        // Cargar valor
         instructions.add(MIPSInstruction.loadStore(
                 MIPSInstruction.OpCode.LW,
                 destReg,
                 "0(" + addrReg + ")"
         ));
 
-        // liberar temporales usados
+        // Liberar registros temporales
         allocator.freeRegister(indexReg);
         allocator.freeRegister(addrReg);
         allocator.freeRegister(baseReg);
@@ -768,10 +778,12 @@ public class MIPSGenerator {
         int openBracket = arrayAccess.indexOf('[');
         int closeBracket = arrayAccess.indexOf(']');
 
-        if (openBracket < 0 || closeBracket < 0) return;
+        if (openBracket < 0 || closeBracket < 0) {
+            return;
+        }
 
-        String arrayName = arrayAccess.substring(0, openBracket);
-        String index = arrayAccess.substring(openBracket + 1, closeBracket);
+        String arrayName = arrayAccess.substring(0, openBracket).trim();
+        String index = arrayAccess.substring(openBracket + 1, closeBracket).trim();
 
         Symbol arraySym = tacGenerator.getSymbol(arrayName);
         if (arraySym == null) {
@@ -779,18 +791,63 @@ public class MIPSGenerator {
             return;
         }
 
-        String srcReg = allocator.getReg(src);
+        instructions.add(MIPSInstruction.comment("Array store: " + arrayAccess + " = " + src));
 
-        // === Base del array (registro) ===
-        String baseReg = allocator.getReg("__arr_base_" + arrayName);
+        // Obtener registro con el valor a guardar
+        String srcReg;
+        if (isImmediate(src)) {
+            srcReg = allocator.getReg("__arr_src_tmp");
+            instructions.add(MIPSInstruction.li(srcReg, Integer.parseInt(src)));
+        } else {
+            srcReg = allocator.getReg(src);
+        }
 
-        int baseOffset = arraySym.getOffset();
+        // CASO 1: ÍNDICE INMEDIATO
+        if (isImmediate(index)) {
+            int idx = Integer.parseInt(index);
+            int elementOffset = idx * 4;
 
-        // ==================================================
-        // 1. Obtener dirección base (local: FP+offset, global: la)
-        // ==================================================
+            if (arraySym.isLocal()) {
+                // LOCAL: guardar en $fp + baseOffset + elementOffset
+                int baseOffset = arraySym.getOffset();
+                int totalOffset = baseOffset + elementOffset;
+
+                instructions.add(MIPSInstruction.loadStore(
+                        MIPSInstruction.OpCode.SW,
+                        srcReg,
+                        totalOffset + "($fp)"
+                ));
+            } else {
+                // GLOBAL: usar label
+                instructions.add(MIPSInstruction.loadStore(
+                        MIPSInstruction.OpCode.SW,
+                        srcReg,
+                        arrayName + "+" + elementOffset
+                ));
+            }
+
+            if (isImmediate(src)) {
+                allocator.freeRegister(srcReg);
+            }
+            return;
+        }
+
+        //  CASO 2: ÍNDICE VARIABLE
+        String indexReg = allocator.getReg(index);
+        String addrReg = allocator.getReg("__arr_addr");
+        String baseReg = allocator.getReg("__arr_base");
+
+        // offset = index * 4
+        instructions.add(MIPSInstruction.typeR(
+                MIPSInstruction.OpCode.SLL,
+                addrReg,
+                indexReg,
+                "2"
+        ));
+
         if (arraySym.isLocal()) {
-            // LOCAL: base = $fp + offset
+            // LOCAL: base = $fp + offset_base
+            int baseOffset = arraySym.getOffset();
             instructions.add(MIPSInstruction.typeI(
                     MIPSInstruction.OpCode.ADDI,
                     baseReg,
@@ -798,45 +855,11 @@ public class MIPSGenerator {
                     baseOffset
             ));
         } else {
-            // GLOBAL: base = dirección global (label)
-            instructions.add(MIPSInstruction.la(
-                    baseReg,
-                    arraySym.getTacAddress()
-            ));
+            // GLOBAL: cargar dirección
+            instructions.add(MIPSInstruction.la(baseReg, arrayName));
         }
 
-        // ==================================================
-        // 2. Caso índice inmediato
-        // ==================================================
-        if (isImmediate(index)) {
-            int idx = Integer.parseInt(index);
-            int offset = idx * 4;
-
-            instructions.add(MIPSInstruction.loadStore(
-                    MIPSInstruction.OpCode.SW,
-                    srcReg,
-                    offset + "(" + baseReg + ")"
-            ));
-
-            allocator.freeRegister(baseReg);
-            return;
-        }
-
-        // ==================================================
-        // 3. Caso índice en registro
-        // ==================================================
-        String indexReg = allocator.getReg(index);
-        String addrReg  = allocator.getReg("__arr_addr_" + arrayName);
-
-        // offset = index * 4   →  sll addrReg, indexReg, 2
-        instructions.add(MIPSInstruction.typeR(
-                MIPSInstruction.OpCode.SLL,
-                addrReg,      // rd
-                indexReg,     // rt (realmente es rt)
-                "2"           // shamt
-        ));
-
-        // addrReg = base + offset → add addrReg, baseReg, addrReg
+        // Dirección efectiva
         instructions.add(MIPSInstruction.typeR(
                 MIPSInstruction.OpCode.ADD,
                 addrReg,
@@ -844,16 +867,21 @@ public class MIPSGenerator {
                 addrReg
         ));
 
-        // Guardar valor: sw srcReg, 0(addrReg)
+        // Guardar valor
         instructions.add(MIPSInstruction.loadStore(
                 MIPSInstruction.OpCode.SW,
                 srcReg,
                 "0(" + addrReg + ")"
         ));
 
+        // Liberar registros temporales
         allocator.freeRegister(indexReg);
         allocator.freeRegister(addrReg);
         allocator.freeRegister(baseReg);
+
+        if (isImmediate(src)) {
+            allocator.freeRegister(srcReg);
+        }
     }
 
     /**
@@ -864,7 +892,7 @@ public class MIPSGenerator {
      * 1. Operadores relacionales (<, >, ==, etc.) → Comparación
      * 2. Operadores aritméticos con strings (+) → Concatenación
      * 3. Operadores aritméticos normales (+, -, *, /) → Aritmética
-     * 4. Operadores lógicos (&&, ||) → Ya manejados en TAC
+     * 4. Operadores lógicos (&&, ||)
      */
     private void generateBinaryOp(TACInstruction tac) {
         String op = tac.getOperator();
