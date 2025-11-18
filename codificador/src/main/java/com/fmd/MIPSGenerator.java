@@ -645,7 +645,7 @@ public class MIPSGenerator {
 
         // CASO 5: Variable normal
         String srcReg = allocator.getReg(src);
-        String destReg = allocator.getRegAssign(dest, src);
+        String destReg = allocator.getReg(dest);
 
         // Evitar move redundante (move $t0, $t0)
         if (!destReg.equals(srcReg)) {
