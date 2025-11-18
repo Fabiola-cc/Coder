@@ -532,20 +532,19 @@ public class MIPSGenerator {
 
         instructions.add(MIPSInstruction.comment("Property set: " + propertyAccess + " = " + value));
 
-        // 1. Cargar THIS
+        // 1. Cargar THIS desde el stack frame
         String objReg = "$t8";
         if (objName.equals("this")) {
-            instructions.add(MIPSInstruction.loadStore(OpCode.LW, objReg, "8($sp)"));
+            instructions.add(MIPSInstruction.loadStore(OpCode.LW, objReg, "0($fp)")); // ← CAMBIO: usar $fp
         } else {
             objReg = allocator.getReg(objName);
         }
 
-        // 2. CRÍTICO: Cargar VALUE desde stack
-        String valueReg = "$t9"; // Registro temporal para el valor
+        // 2. Cargar VALUE desde el stack frame
+        String valueReg = "$t9";
         Symbol valueSym = tacGenerator.getSymbol(value);
 
-        if (valueSym != null && objName.equals("this")) {
-            // Es parámetro, buscar su índice
+        if (valueSym != null && valueSym.isLocal()) {
             Symbol funcSym = tacGenerator.getSymbol(currentFunction);
             if (funcSym != null) {
                 List<Symbol> params = funcSym.getParams();
@@ -559,30 +558,31 @@ public class MIPSGenerator {
                 }
 
                 if (paramIndex >= 0) {
-                    // ESTE ES EL CÓDIGO CRÍTICO QUE DEBE EJECUTARSE:
-                    int offset = 12 + (paramIndex * 4);
-                    instructions.add(MIPSInstruction.loadStore(OpCode.LW, valueReg, offset + "($sp)"));
+                    // CORRECCIÓN: Parámetros están en offsets relativos a $fp
+                    // Si es método: 0($fp)=this, 4($fp)=param0, 8($fp)=param1
+                    // Si es función: 0($fp)=param0, 4($fp)=param1
+                    boolean isMethod = funcSym.getEnclosingClassName() != null;
+                    int offset;
 
-                    // DEBUGGING: Agregar comentario
-                    instructions.add(MIPSInstruction.comment("Loaded param " + value + " from " + offset + "($sp) into " + valueReg));
+                    if (isMethod) {
+                        offset = (paramIndex + 1) * 4; // +1 porque this está en 0($fp)
+                    } else {
+                        offset = paramIndex * 4;
+                    }
+
+                    instructions.add(MIPSInstruction.loadStore(OpCode.LW, valueReg, offset + "($fp)")); // ← CAMBIO: usar $fp
+                    instructions.add(MIPSInstruction.comment("Loaded param " + value + " from " + offset + "($fp) into " + valueReg));
                 } else {
-                    // No encontró el índice
                     instructions.add(MIPSInstruction.comment("ERROR: Parameter index not found for " + value));
                     valueReg = allocator.getReg(value);
                 }
-            } else {
-                instructions.add(MIPSInstruction.comment("ERROR: Current function not found"));
-                valueReg = allocator.getReg(value);
             }
         } else if (isImmediate(value)) {
-            // Es un número literal
             instructions.add(MIPSInstruction.li(valueReg, Integer.parseInt(value)));
         } else if (isStringLiteral(value)) {
-            // Es un string literal
             String label = stringLiterals.get(value);
             instructions.add(MIPSInstruction.la(valueReg, label));
         } else {
-            // Es una variable normal
             valueReg = allocator.getReg(value);
         }
 
@@ -1616,50 +1616,42 @@ public class MIPSGenerator {
      * Carga parámetros desde $a0-$a3
      */
     private void generateFunctionProlog(TACInstruction tac) {
-        String fn = tac.getLabel();
-        currentFunction = fn;
+        String functionName = tac.getLabel();
+        currentFunction = functionName;
 
-        Symbol f = tacGenerator.getSymbol(fn);
-        boolean isMethod = f != null && f.getEnclosingClassName() != null;
+        Symbol funcSym = tacGenerator.getSymbol(functionName);
+        boolean isMethod = funcSym != null && funcSym.getEnclosingClassName() != null;
 
-        if (isMethod)
-            fn = f.getEnclosingClassName() + "_" + fn;
+        int paramCount = funcSym != null ? funcSym.getParamCount() : 0;
+        if (isMethod) {
+            functionName = funcSym.getEnclosingClassName() + "_" + functionName;
+            paramCount++; // Contar 'this'
+        }
 
-        instructions.add(MIPSInstruction.label(fn));
+        instructions.add(MIPSInstruction.label(functionName));
+        int localSpace = calculateLocalSpace();
 
-        // Calcular espacios
-        int frameSize = 8 + calculateLocalSpace();
+        // CORRECCIÓN: Incluir espacio para parámetros en el frame
+        int paramsSpace = Math.min(paramCount, 4) * 4; // Espacio para hasta 4 params
+        int frameSize = 8 + paramsSpace + localSpace; // $fp + $ra + params + locales
 
-        // Crear frame
+        // Crear stack frame
         instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$sp", "$sp", -frameSize));
-
-        // saved fp y saved ra
-        instructions.add(MIPSInstruction.loadStore(
-                OpCode.SW, "$fp", (frameSize - 8) + "($sp)"
-        ));
-
-        instructions.add(MIPSInstruction.loadStore(
-                OpCode.SW, "$ra", (frameSize - 4) + "($sp)"
-        ));
-
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$fp", (frameSize - 8) + "($sp)"));
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$ra", (frameSize - 4) + "($sp)"));
         instructions.add(MIPSInstruction.move("$fp", "$sp"));
 
-        assert f != null;
-        int paramCount = f.getParamCount() + (isMethod ? 1 : 0);
-        // Guardar parámetros en el stack frame
+        // Guardar parámetros DESPUÉS de $fp y $ra
         Register[] argRegs = {Register.A0, Register.A1, Register.A2, Register.A3};
-        int baseOffset = 8; // Después de $fp y $ra guardados
-
         for (int i = 0; i < Math.min(paramCount, 4); i++) {
-            int offset = baseOffset + (i * 4);
+            int offset = i * 4; // Offsets 0, 4, 8, 12 desde el inicio del frame
             instructions.add(MIPSInstruction.loadStore(
                     OpCode.SW,
                     argRegs[i].getName(),
-                    offset + "($sp)"  // Relativo a $sp, NO a $fp
+                    offset + "($fp)" // ← USAR $fp, no $sp
             ));
         }
 
-        // Reset allocator
         allocator.reset();
     }
 
@@ -1671,8 +1663,14 @@ public class MIPSGenerator {
         String functionName = tac.getLabel();
         instructions.add(MIPSInstruction.label(functionName + "_epilog"));
 
+        Symbol funcSym = tacGenerator.getSymbol(functionName);
+        boolean isMethod = funcSym != null && funcSym.getEnclosingClassName() != null;
+        int paramCount = funcSym != null ? funcSym.getParamCount() : 0;
+        if (isMethod) paramCount++;
+
         int localSpace = calculateLocalSpace();
-        int frameSize = 8 + localSpace;
+        int paramsSpace = Math.min(paramCount, 4) * 4;
+        int frameSize = 8 + paramsSpace + localSpace;
 
         allocator.flushAll();
 
