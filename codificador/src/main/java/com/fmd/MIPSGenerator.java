@@ -1635,7 +1635,7 @@ public class MIPSGenerator {
     }
 
     /**
-     * Genera prólogo de función
+     * Genera prólogo de función - VERSIÓN CON SOPORTE PARA RECURSIÓN
      */
     private void generateFunctionProlog(TACInstruction tac) {
         String functionName = tac.getLabel();
@@ -1655,31 +1655,45 @@ public class MIPSGenerator {
         int localSpace = calculateLocalSpace();
         int paramsSpace = Math.min(paramCount, 4) * 4;
 
-        // Frame layout:
+        // CRÍTICO: Reservar espacio para TODOS los registros $s que se usarán
+        int savedRegsSpace = 32; // 8 registros $s × 4 bytes = 32 bytes
+
+        // Frame layout MEJORADO:
         // 0($fp): $fp guardado
         // 4($fp): $ra guardado
-        // 8($fp): param0
-        // 12($fp): param1
+        // 8-39($fp): registros $s0-$s7 guardados (32 bytes)
+        // 40($fp): param0
+        // 44($fp): param1
         // ...
-        int frameSize = 8 + paramsSpace + localSpace;
+        int frameSize = 8 + savedRegsSpace + paramsSpace + localSpace;
 
-        // 1. Reservar espacio en el stack (UNA SOLA VEZ)
+        // 1. Reservar espacio en el stack
         instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$sp", "$sp", -frameSize));
 
-        // 2. Guardar $fp ANTERIOR (antes de modificarlo)
-        //    NOTA: En este punto $fp aún apunta al frame del caller
+        // 2. Guardar $fp ANTERIOR
         instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$fp", "0($sp)"));
 
         // 3. Guardar $ra
         instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$ra", "4($sp)"));
 
-        // 4. Establecer  $fp (ahora sí, apunta al inicio de este frame)
+        // 4. **NUEVO: Guardar TODOS los registros $s0-$s7**
+        for (int i = 0; i < allocator.getSavedRegisters().length; i++) {
+            int offset = 8 + (i * 4);
+            instructions.add(MIPSInstruction.loadStore(
+                    OpCode.SW,
+                    allocator.getSavedRegisters()[i],
+                    offset + "($sp)"
+            ));
+        }
+        instructions.add(MIPSInstruction.comment("Saved $s0-$s7"));
+
+        // 5. Establecer nuevo $fp
         instructions.add(MIPSInstruction.move("$fp", "$sp"));
 
-        // 5. Guardar parámetros (después del overhead)
+        // 6. Guardar parámetros (después del overhead + saved regs)
         Register[] argRegs = {Register.A0, Register.A1, Register.A2, Register.A3};
         for (int i = 0; i < Math.min(paramCount, 4); i++) {
-            int offset = 8 + (i * 4);
+            int offset = 8 + savedRegsSpace + (i * 4); // 8 + 32 = 40
             instructions.add(MIPSInstruction.loadStore(
                     OpCode.SW,
                     argRegs[i].getName(),
@@ -1689,40 +1703,36 @@ public class MIPSGenerator {
         }
 
         instructions.add(MIPSInstruction.comment("Frame size: " + frameSize +
-                " (8 overhead + " + paramsSpace +
+                " (8 overhead + 32 saved regs + " + paramsSpace +
                 " params + " + localSpace + " locals)"));
 
-        // 6. Reset allocator y cargar parámetros
+        // 7. Reset allocator y cargar parámetros
         allocator.reset();
 
         if (funcSym != null) {
-            loadFunctionParameters(funcSym, isMethod);
+            loadFunctionParameters(funcSym, isMethod, savedRegsSpace);
         }
     }
 
     /**
      * Carga los parámetros desde el stack frame
-     * Parámetros empiezan en 8($fp)
+     * Considera el espacio de registros saved
      */
-    private void loadFunctionParameters(Symbol funcSym, boolean isMethod) {
+    private void loadFunctionParameters(Symbol funcSym, boolean isMethod, int savedRegsSpace) {
         if (funcSym == null || funcSym.getParams() == null) return;
 
         List<Symbol> params = funcSym.getParams();
-
         instructions.add(MIPSInstruction.comment("Loading parameters from frame"));
 
         for (int i = 0; i < params.size(); i++) {
             Symbol param = params.get(i);
             String paramName = param.getName();
 
-            int paramOffset = 8 + (i * 4);
+            // OFFSET CORREGIDO: 8 (overhead) + 32 (saved regs) + param_index * 4
+            int paramOffset = 8 + savedRegsSpace + (i * 4); // = 40 + i*4
 
-            // Forzar que los parámetros usen registros $s
-            // Esto los protege de ser sobrescritos por llamadas
             String paramReg;
-
             if (i < 4) {
-                // Usar $s0-$s3 para los primeros 4 parámetros
                 paramReg = "$s" + i;
                 allocator.forceRegisterMapping(paramName, paramReg);
             } else {
@@ -1744,7 +1754,7 @@ public class MIPSGenerator {
     }
 
     /**
-     * Genera epílogo de función - SINCRONIZADO CON  LAYOUT
+     * Genera epílogo de función - CON RESTAURACIÓN DE REGISTROS $s
      */
     private void generateFunctionEpilog(TACInstruction tac) {
         String functionName = tac.getLabel();
@@ -1757,24 +1767,36 @@ public class MIPSGenerator {
 
         int localSpace = calculateLocalSpace();
         int paramsSpace = Math.min(paramCount, 4) * 4;
-        int frameSize = 8 + paramsSpace + localSpace;
+        int savedRegsSpace = 32; // 8 registros $s
+        int frameSize = 8 + savedRegsSpace + paramsSpace + localSpace;
 
         // PASO 1: Guardar registros dirty
         allocator.flushAll();
 
-        // PASO 2: Restaurar $fp anterior desde 0($fp)
-        instructions.add(MIPSInstruction.loadStore(OpCode.LW, "$t9", "0($fp)"));  // Cargar $fp anterior a temp
+        // PASO 2: **RESTAURAR registros $s0-$s7**
+        for (int i = 0; i < allocator.getSavedRegisters().length; i++) {
+            int offset = 8 + (i * 4);
+            instructions.add(MIPSInstruction.loadStore(
+                    OpCode.LW,
+                    allocator.getSavedRegisters()[i],
+                    offset + "($fp)"
+            ));
+        }
+        instructions.add(MIPSInstruction.comment("Restored $s0-$s7"));
 
-        // PASO 3: Restaurar $ra desde 4($fp)
+        // PASO 3: Restaurar $fp anterior
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, "$t9", "0($fp)"));
+
+        // PASO 4: Restaurar $ra
         instructions.add(MIPSInstruction.loadStore(OpCode.LW, "$ra", "4($fp)"));
 
-        // PASO 4: Restaurar $sp
+        // PASO 5: Restaurar $sp
         instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$sp", "$fp", frameSize));
 
-        // PASO 5: Restaurar $fp desde temp
+        // PASO 6: Restaurar $fp
         instructions.add(MIPSInstruction.move("$fp", "$t9"));
 
-        // PASO 6: Retornar
+        // PASO 7: Retornar
         instructions.add(MIPSInstruction.jumpReg("$ra"));
 
         currentFunction = null;

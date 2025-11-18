@@ -542,6 +542,10 @@ public class RegisterAllocator {
         }
     }
 
+    public static String[] getSavedRegisters() {
+        return SAVED_REGISTERS;
+    }
+
     // ============================================
     // UTILIDADES
     // ============================================
