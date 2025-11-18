@@ -1002,17 +1002,17 @@ public class MIPSGenerator {
 
         for (int i = currentLine - 1; i >= 0; i--) {
             TACInstruction tac = instructions.get(i);
+            if (tac.getResult() != null && tac.getResult().equals(param)) {
+                if (tac.getOp() == TACInstruction.OpType.BINARY_OP &&
+                        tac.getOperator().equals("+") &&
+                        isStringOperation(tac.getArg1(), tac.getArg2())) {
 
-            if (tac.getOp() == TACInstruction.OpType.BINARY_OP &&
-                    tac.getOperator().equals("+") &&
-                    tac.getResult() != null &&
-                    tac.getResult().equals(param) &&
-                    isStringOperation(tac.getArg1(), tac.getArg2())) {
-
-                // Expandir recursivamente CON el contexto de línea correcto
-                expandAndPrint(tac.getArg1(), i);
-                expandAndPrint(tac.getArg2(), i);
-                return;
+                    // Expandir recursivamente CON el contexto de línea correcto
+                    expandAndPrint(tac.getArg1(), i);
+                    expandAndPrint(tac.getArg2(), i);
+                    return;
+                }
+                break;
             }
         }
 

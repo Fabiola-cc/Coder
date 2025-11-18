@@ -540,7 +540,6 @@ public class RegisterAllocator {
         freeRegisters.clear();
         instructions.clear();
         tempOffsets.clear();
-        currentLine = 0;
         nextTempOffset = 1000;
 
         // Reinicializar registros
