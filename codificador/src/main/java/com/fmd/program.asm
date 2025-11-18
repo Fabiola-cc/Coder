@@ -55,15 +55,15 @@ main:
     move    $t3, $t2
     move    $a0, $t3
     li      $v0, 1
-    syscall 
+    syscall
     la      $t3, str_0
     la      $a0, str_0
     li      $v0, 4
-    syscall 
+    syscall
     move    $t3, $t4
     move    $a0, $t3
     li      $v0, 1
-    syscall 
+    syscall
 
     # Fin del programa
     li      $v0, 10
@@ -76,35 +76,35 @@ print:
     bge     $a0, $t9, print_as_string
 print_as_int:
     li      $v0, 1
-    syscall 
+    syscall
     j       print_end
 print_as_string:
     li      $v0, 4
-    syscall 
+    syscall
 print_end:
     lw      $ra, 0($sp)
     addi    $sp, $sp, 4
     jr      $ra
 read_int:
     li      $v0, 5
-    syscall 
+    syscall
     jr      $ra
 print_bool:
     beq     $a0, $zero, print_bool_false
     la      $a0, true_str
     li      $v0, 4
-    syscall 
+    syscall
     j       print_bool_end
 print_bool_false:
     la      $a0, false_str
     li      $v0, 4
-    syscall 
+    syscall
 print_bool_end:
     jr      $ra
 print_newline:
     la      $a0, newline
     li      $v0, 4
-    syscall 
+    syscall
     jr      $ra
 concat_strings:
     addi    $sp, $sp, -20
@@ -136,7 +136,7 @@ cs_len2_done:
     add     $a0, $s2, $s3
     addi    $a0, $a0, 1
     li      $v0, 9
-    syscall 
+    syscall
     move    $t2, $v0
     move    $t0, $s0
     move    $t1, $t2

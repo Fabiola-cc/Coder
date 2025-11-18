@@ -625,6 +625,7 @@ public class RegisterAllocator {
         }
 
         lastUse.put(variable, currentLine);
+    }
       
     public void setmultipleRecursive(Boolean multipleRecursive) {
         this.multipleRecursive = multipleRecursive;
