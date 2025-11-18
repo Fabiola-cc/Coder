@@ -34,6 +34,7 @@ public class RegisterAllocator {
     private Stack<String> freeRegisters;                        // registros disponibles
     private Map<String, Integer> lastUse;                       // variable -> última línea usada
     private int currentLine;                                    // línea TAC actual
+    private String currentFunc;
 
     // Referencia a tabla de símbolos (para offsets)
     private TACGenerator tacGenerator;
@@ -58,6 +59,7 @@ public class RegisterAllocator {
         this.freeRegisters = new Stack<>();
         this.lastUse = new HashMap<>();
         this.currentLine = 0;
+        this.currentFunc = "";
         this.instructions = new ArrayList<>();
         this.tempOffsets = new HashMap<>();
         this.nextTempOffset = 1000;
@@ -346,7 +348,22 @@ public class RegisterAllocator {
             return tempOffsets.get(variable);
         }
 
-        // 3. Acceso a array como name[CONST]
+        // 3. Verificar si es un PARÁMETRO de la función actual
+        if (tacGenerator != null) {
+            Symbol currentFuncSym = tacGenerator.getSymbol(currentFunc);
+
+            if (currentFuncSym != null && currentFuncSym.getParams() != null) {
+                List<Symbol> params = currentFuncSym.getParams();
+                for (int i = 0; i < params.size(); i++) {
+                    if (params.get(i).getName().equals(variable)) {
+                        // Parámetros están en 0($fp), 4($fp), 8($fp)...
+                        return i * 4;
+                    }
+                }
+            }
+        }
+
+        // 4. Acceso a array como name[CONST]
         if (variable.contains("[")) {
             int idxOpen = variable.indexOf('[');
             int idxClose = variable.indexOf(']');
@@ -373,7 +390,7 @@ public class RegisterAllocator {
             return -1;
         }
 
-        // 4. Acceso a miembro this.name (o obj.member)
+        // 5. Acceso a miembro this.name (o obj.member)
         if (variable.contains(".")) {
             String[] parts = variable.split("\\.");
             if (parts.length == 2) {
@@ -390,7 +407,7 @@ public class RegisterAllocator {
             return -1;
         }
 
-        // 5. Variable normal
+        // 6. Variable normal
         Symbol sym = tacGenerator.getSymbol(variable);
         if (sym != null && sym.getOffset() >= 0) {
             return sym.getOffset();
@@ -469,6 +486,17 @@ public class RegisterAllocator {
             if (desc.isDirty()) {
                 spillRegister(reg);
             }
+        }
+    }
+
+    /**
+     * Marca un registro como "clean" (sincronizado con memoria)
+     * Usado después de cargar un valor desde memoria
+     */
+    public void markClean(String register) {
+        RegisterDescriptor desc = registerState.get(register);
+        if (desc != null) {
+            desc.setClean();
         }
     }
 
@@ -564,6 +592,10 @@ public class RegisterAllocator {
 
     public int getCurrentLine() {
         return currentLine;
+    }
+
+    public void setCurrentFunc(String currentFunc) {
+        this.currentFunc = currentFunc;
     }
 
     public void setLoadObject(Boolean loadObject) {
