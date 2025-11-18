@@ -15,9 +15,9 @@ import java.util.*;
  */
 public class RegisterAllocator {
 
-    // ============================================
+    
     // REGISTROS DISPONIBLES
-    // ============================================
+    
     private static final String[] TEMP_REGISTERS = {
             "$t0", "$t1", "$t2", "$t3", "$t4", "$t5", "$t6", "$t7"
     };
@@ -26,14 +26,15 @@ public class RegisterAllocator {
             "$s0", "$s1", "$s2", "$s3", "$s4", "$s5", "$s6", "$s7"
     };
 
-    // ============================================
+    
     // ESTADO DEL ALLOCATOR
-    // ============================================
+    
     private Map<String, RegisterDescriptor> registerState;      // registro -> descriptor
     private Map<String, String> variableToRegister;             // variable -> registro actual
     private Stack<String> freeRegisters;                        // registros disponibles
     private Map<String, Integer> lastUse;                       // variable -> última línea usada
     private int currentLine;                                    // línea TAC actual
+    private String currentFunc;
 
     // Referencia a tabla de símbolos (para offsets)
     private TACGenerator tacGenerator;
@@ -48,9 +49,9 @@ public class RegisterAllocator {
     // Flag para registros
     private Boolean loadObject;
 
-    // ============================================
+    
     // CONSTRUCTOR
-    // ============================================
+    
     public RegisterAllocator(TACGenerator tacGenerator) {
         this.tacGenerator = tacGenerator;
         this.registerState = new HashMap<>();
@@ -58,6 +59,7 @@ public class RegisterAllocator {
         this.freeRegisters = new Stack<>();
         this.lastUse = new HashMap<>();
         this.currentLine = 0;
+        this.currentFunc = "";
         this.instructions = new ArrayList<>();
         this.tempOffsets = new HashMap<>();
         this.nextTempOffset = 1000;
@@ -75,9 +77,9 @@ public class RegisterAllocator {
         }
     }
 
-    // ============================================
+    
     // MÉTODO PRINCIPAL: getReg()
-    // ============================================
+    
     /**
      * ALGORITMO getReg() - NÚCLEO DEL PROYECTO
      * Asigna un registro para una variable/temporal según el algoritmo del Dragon Book
@@ -168,9 +170,9 @@ public class RegisterAllocator {
         return victim;
     }
 
-    // ============================================
+    
     // ASIGNACIÓN Y LIBERACIÓN
-    // ============================================
+    
     /**
      * Asigna un registro a una variable
      */
@@ -211,9 +213,9 @@ public class RegisterAllocator {
     }
 
 
-    // ============================================
+    
     // SPILLING (DESALOJO A MEMORIA)
-    // ============================================
+    
     /**
      * Guarda un registro en memoria (stack o frame)
      * Solo guarda si el registro está "dirty" (modificado)
@@ -322,9 +324,9 @@ public class RegisterAllocator {
         return currentLine - last; // distancia desde último uso
     }
 
-    // ============================================
+    
     // ACCESO A MEMORIA (LOAD/STORE)
-    // ============================================
+    
     /**
      * Obtiene el offset en el frame para una variable
      * Usa la tabla de símbolos del TAC que ya tiene los offsets calculados
@@ -346,7 +348,22 @@ public class RegisterAllocator {
             return tempOffsets.get(variable);
         }
 
-        // 3. Acceso a array como name[CONST]
+        // 3. Verificar si es un PARÁMETRO de la función actual
+        if (tacGenerator != null) {
+            Symbol currentFuncSym = tacGenerator.getSymbol(currentFunc);
+
+            if (currentFuncSym != null && currentFuncSym.getParams() != null) {
+                List<Symbol> params = currentFuncSym.getParams();
+                for (int i = 0; i < params.size(); i++) {
+                    if (params.get(i).getName().equals(variable)) {
+                        // Parámetros están en 0($fp), 4($fp), 8($fp)...
+                        return i * 4;
+                    }
+                }
+            }
+        }
+
+        // 4. Acceso a array como name[CONST]
         if (variable.contains("[")) {
             int idxOpen = variable.indexOf('[');
             int idxClose = variable.indexOf(']');
@@ -373,7 +390,7 @@ public class RegisterAllocator {
             return -1;
         }
 
-        // 4. Acceso a miembro this.name (o obj.member)
+        // 5. Acceso a miembro this.name (o obj.member)
         if (variable.contains(".")) {
             String[] parts = variable.split("\\.");
             if (parts.length == 2) {
@@ -390,7 +407,7 @@ public class RegisterAllocator {
             return -1;
         }
 
-        // 5. Variable normal
+        // 6. Variable normal
         Symbol sym = tacGenerator.getSymbol(variable);
         if (sym != null && sym.getOffset() >= 0) {
             return sym.getOffset();
@@ -446,9 +463,9 @@ public class RegisterAllocator {
     }
 
 
-    // ============================================
+    
     // DIRTY BIT MANAGEMENT
-    // ============================================
+    
     /**
      * Marca un registro como "dirty" (modificado, no sincronizado)
      */
@@ -472,9 +489,20 @@ public class RegisterAllocator {
         }
     }
 
-    // ============================================
+    /**
+     * Marca un registro como "clean" (sincronizado con memoria)
+     * Usado después de cargar un valor desde memoria
+     */
+    public void markClean(String register) {
+        RegisterDescriptor desc = registerState.get(register);
+        if (desc != null) {
+            desc.setClean();
+        }
+    }
+
+    
     // CONTEXT MANAGEMENT (para llamadas a función)
-    // ============================================
+    
     /**
      * Guarda todos los registros $t antes de una llamada
      */
@@ -512,6 +540,10 @@ public class RegisterAllocator {
                 spillRegister(reg);
             }
         }
+    }
+
+    public static String[] getSavedRegisters() {
+        return SAVED_REGISTERS;
     }
 
     // UTILIDADES
@@ -562,6 +594,10 @@ public class RegisterAllocator {
 
     public int getCurrentLine() {
         return currentLine;
+    }
+
+    public void setCurrentFunc(String currentFunc) {
+        this.currentFunc = currentFunc;
     }
 
     public void setLoadObject(Boolean loadObject) {
