@@ -9,14 +9,7 @@ import com.fmd.modules.Symbol;
 import jakarta.servlet.ServletOutputStream;
 
 /**
- * Generador de código MIPS MEJORADO
- *
- * MEJORAS sobre la versión original:
- * - Manejo de string literals en segmento de datos
- * - Eliminación de instrucciones redundantes (move $t0, $t0)
- * - Mejor manejo de acceso a arrays
- * - Segmento de datos más completo
- * - Inicialización y finalización del programa
+ * Generador de código MIPS
  */
 public class MIPSGenerator {
     private RegisterAllocator allocator;
@@ -405,6 +398,34 @@ public class MIPSGenerator {
     private void generateInstruction(TACInstruction tac) {
         TACInstruction.OpType opType = tac.getOp();
 
+        // Detectar "t1 = myDog.speak" ANTES del switch
+        if (opType == TACInstruction.OpType.ASSIGN) {
+            String dest = tac.getResult();
+            String src = tac.getArg1();
+
+            // Verificar si es método (NO propiedad)
+            if (dest != null && dest.matches("^t\\d+$") &&
+                    src != null && src.contains(".")) {
+
+                int dotIndex = src.indexOf('.');
+                String objName = src.substring(0, dotIndex);
+                String memberName = src.substring(dotIndex + 1);
+
+                Symbol objSymbol = getObjectSymbol(objName);
+                if (objSymbol != null) {
+                    String className = objSymbol.getType();
+                    Symbol classSymbol = tacGenerator.getSymbol(className);
+
+                    if (classSymbol != null && isMethod(classSymbol, memberName)) {
+                        // Es método - NO generar código, solo comentar
+                        instructions.add(MIPSInstruction.comment("Method reference: " + dest + " = " + src + " (resolved on call)"));
+                        return; // ← SALIR AQUÍ, no entrar al switch
+                    }
+                }
+            }
+        }
+
+        // Continuar con el procesamiento normal
         switch (opType) {
             case ASSIGN:
                 // Detectar si es property access o property set
@@ -508,6 +529,16 @@ public class MIPSGenerator {
         String objName = propertyAccess.substring(0, dotIndex);
         String propName = propertyAccess.substring(dotIndex + 1);
 
+        // getObjectSymbol YA retorna el Symbol de la CLASE
+        Symbol classSymbol = getObjectSymbol(objName);
+
+        if (classSymbol != null && isMethod(classSymbol, propName)) {
+            // Es método, NO generar lw
+            instructions.add(MIPSInstruction.comment("Method reference: " + dest + " = " + propertyAccess + " (resolved later)"));
+            return; // ← SALIR AQUÍ
+        }
+
+        // Es propiedad normal - continuar con lw
         instructions.add(MIPSInstruction.comment("Property get: " + dest + " = " + propertyAccess));
 
         // Obtener registro del objeto
@@ -519,14 +550,12 @@ public class MIPSGenerator {
             objReg = allocator.getReg(objName);
         }
 
-        // Obtener offset de la propiedad
-        Symbol objSymbol = getObjectSymbol(objName);
-        if (objSymbol == null) {
+        if (classSymbol == null) {
             instructions.add(MIPSInstruction.comment("ERROR: Object symbol not found: " + objName));
             return;
         }
 
-        int propOffset = getPropertyOffsetWithInheritance(objSymbol, propName);
+        int propOffset = getPropertyOffsetWithInheritance(classSymbol, propName);
 
         // Cargar propiedad
         String destReg = allocator.getReg(dest);
@@ -537,6 +566,34 @@ public class MIPSGenerator {
         ));
 
         allocator.markDirty(destReg);
+    }
+
+    /**
+     * Verifica si un nombre es un método en la clase o superclases
+     */
+    private boolean isMethod(Symbol classSymbol, String memberName) {
+        if (classSymbol == null || memberName == null) {
+            return false;
+        }
+
+        // Buscar en los miembros de esta clase
+        if (classSymbol.getMembers() != null) {
+            for (Symbol member : classSymbol.getMembers().values()) {
+                if (member.getName().equals(memberName)) {
+                    return member.getKind() == Symbol.Kind.FUNCTION;
+                }
+            }
+        }
+
+        // Buscar recursivamente en la superclase
+        if (classSymbol.getSuperClass() != null) {
+            Symbol superClassSymbol = tacGenerator.getSymbol(classSymbol.getSuperClass());
+            if (superClassSymbol != null) {
+                return isMethod(superClassSymbol, memberName);
+            }
+        }
+
+        return false;
     }
 
     private void generatePropertySet(TACInstruction tac) {
@@ -622,7 +679,7 @@ public class MIPSGenerator {
 
     /**
      * Genera asignación: x = y
-     * MEJORADO: Maneja string literals, evita moves redundantes, arrays
+     * Maneja string literals, evita moves redundantes, arrays
      */
     private void generateAssignment(TACInstruction tac) {
         String dest = tac.getResult();
@@ -1300,9 +1357,75 @@ public class MIPSGenerator {
             return true;
         }
 
-        //  NUEVO: Solo rastrear temporales si tienen asignación DIRECTA de string
+        // Caso 3: Rastrear temporales que vienen de property access a strings
+        if (isTemporalWithStringPropertyAccess(arg1) || isTemporalWithStringPropertyAccess(arg2)) {
+            return true;
+        }
+
+        // Caso 4: Temporal con asignación directa de string
         if (isTemporalWithDirectStringAssignment(arg1) || isTemporalWithDirectStringAssignment(arg2)) {
             return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Verifica si un temporal viene de un property access a string
+     * Ejemplo: t1 = this.name, donde name es string
+     */
+    private boolean isTemporalWithStringPropertyAccess(String temporal) {
+        if (temporal == null || !temporal.matches("^t\\d+$")) {
+            return false;
+        }
+
+        // Buscar la asignación de este temporal
+        for (int i = tacGenerator.getInstructions().size() - 1; i >= 0; i--) {
+            TACInstruction tac = tacGenerator.getInstructions().get(i);
+
+            if (tac.getOp() == TACInstruction.OpType.ASSIGN &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(temporal)) {
+
+                String source = tac.getArg1();
+
+                // Verificar si es property access (obj.prop o this.prop)
+                if (source != null && source.contains(".")) {
+                    int dotIndex = source.indexOf('.');
+                    String objName = source.substring(0, dotIndex);
+                    String propName = source.substring(dotIndex + 1);
+
+                    // Obtener tipo de la propiedad
+                    if (objName.equals("this")) {
+                        // Buscar en la clase actual
+                        if (currentFunction != null) {
+                            Symbol funcSym = tacGenerator.getSymbol(currentFunction);
+                            if (funcSym != null && funcSym.getEnclosingClassName() != null) {
+                                String className = funcSym.getEnclosingClassName();
+                                Symbol classSym = tacGenerator.getSymbol(className);
+
+                                if (classSym != null && classSym.getMembers() != null) {
+                                    Symbol propSym = classSym.getMembers().get(propName);
+                                    if (propSym != null && propSym.getType() != null) {
+                                        return propSym.getType().equals("string");
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Objeto normal
+                        Symbol classSymbol = getObjectSymbol(objName);
+                        if (classSymbol != null && classSymbol.getMembers() != null) {
+                            Symbol propSym = classSymbol.getMembers().get(propName);
+                            if (propSym != null && propSym.getType() != null) {
+                                return propSym.getType().equals("string");
+                            }
+                        }
+                    }
+                }
+
+                break;
+            }
         }
 
         return false;
@@ -1330,6 +1453,7 @@ public class MIPSGenerator {
 
                 String source = tac.getArg1();
 
+                //  SOLO considerar string si es LITERAL directo
                 if (isStringLiteral(source)) {
                     return true;
                 }
@@ -1339,6 +1463,7 @@ public class MIPSGenerator {
                     return true;
                 }
 
+                // Si no es ninguna de las anteriores, NO es string
                 return false;
             }
         }
@@ -1511,15 +1636,90 @@ public class MIPSGenerator {
 
         return null;
     }
+    /**
+     * Verifica si un temporal contiene un string
+     * VERSIÓN CORREGIDA: Evita recursión infinita con Set de visitados
+     */
+    private boolean temporalContainsString(String temporal) {
+        return temporalContainsStringHelper(temporal, new HashSet<>());
+    }
+
+    private boolean temporalContainsStringHelper(String temporal, Set<String> visited) {
+        if (temporal == null || !temporal.matches("^t\\d+$")) {
+            return false;
+        }
+
+        // Evitar ciclos infinitos
+        if (visited.contains(temporal)) {
+            return false;
+        }
+        visited.add(temporal);
+
+        // Buscar en las instrucciones TAC la asignación de este temporal
+        for (TACInstruction tac : tacGenerator.getInstructions()) {
+            if (tac.getOp() == TACInstruction.OpType.ASSIGN &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(temporal)) {
+
+                String source = tac.getArg1();
+
+                // Si se asignó desde un string literal
+                if (isStringLiteral(source)) {
+                    return true;
+                }
+
+                // Si se asignó desde una variable string
+                Symbol sym = tacGenerator.getSymbol(source);
+                if (sym != null && sym.getType() != null && sym.getType().equals("string")) {
+                    return true;
+                }
+
+                // Si se asignó desde otro temporal que es string (recursivo CON visited)
+                if (source != null && source.matches("^t\\d+$")) {
+                    return temporalContainsStringHelper(source, visited);
+                }
+            }
+
+            // Si fue resultado de una concatenación previa
+            if (tac.getOp() == TACInstruction.OpType.BINARY_OP &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(temporal) &&
+                    tac.getOperator().equals("+")) {
+
+                // Si cualquiera de sus operandos era string, el resultado es string
+                if (isStringLiteral(tac.getArg1()) || isStringLiteral(tac.getArg2())) {
+                    return true;
+                }
+
+                // Recursión con visited
+                if (temporalContainsStringHelper(tac.getArg1(), visited) ||
+                        temporalContainsStringHelper(tac.getArg2(), visited)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
 
     /**
      * Verifica si un temporal contiene un entero
      * Busca en las instrucciones TAC previas para ver si fue asignado desde un string
      */
     private boolean temporalContainsInt(String temporal) {
+        return temporalContainsIntHelper(temporal, new HashSet<>());
+    }
+
+    private boolean temporalContainsIntHelper(String temporal, Set<String> visited) {
         if (temporal == null || !temporal.matches("^t\\d+$")) {
             return false;
         }
+
+        // Evitar ciclos
+        if (visited.contains(temporal)) {
+            return false;
+        }
+        visited.add(temporal);
 
         // Buscar en las instrucciones TAC la asignación de este temporal
         for (TACInstruction tac : tacGenerator.getInstructions()) {
@@ -1542,7 +1742,7 @@ public class MIPSGenerator {
 
                 // Si se asignó desde otro temporal que es int (recursivo)
                 if (source != null && source.matches("^t\\d+$")) {
-                    return temporalContainsInt(source);
+                    return temporalContainsIntHelper(source, visited);
                 }
             }
 
@@ -1563,8 +1763,9 @@ public class MIPSGenerator {
                     if (operator.equals("+")) {
                         // Si alguno es string, es concatenación, no aritmética
                         if (isStringLiteral(tac.getArg1()) || isStringLiteral(tac.getArg2()) ||
-                                isTemporalWithDirectStringAssignment(tac.getArg1()) || isTemporalWithDirectStringAssignment(tac.getArg2())) {
-                            return false; // Es concatenación, no produce int
+                                temporalContainsStringHelper(tac.getArg1(), new HashSet<>()) ||
+                                temporalContainsStringHelper(tac.getArg2(), new HashSet<>())) {
+                            return false;
                         }
                     }
 
@@ -1586,13 +1787,7 @@ public class MIPSGenerator {
 
                 String operator = tac.getOperator();
 
-                // Negación aritmética produce integer
-                if (operator.equals("-")) {
-                    return true;
-                }
-
-                // Negación lógica produce boolean (que es integer en MIPS)
-                if (operator.equals("!")) {
+                if (operator.equals("-") || operator.equals("!")) {
                     return true;
                 }
             }
@@ -1601,6 +1796,59 @@ public class MIPSGenerator {
         return false;
     }
 
+    /**
+     * Resuelve una llamada indirecta a método (cuando el TAC es "call t1()")
+     * Busca en TAC previo si t1 fue asignado como "obj.method"
+     * Retorna [objName, methodName, className] o null
+     */
+    private String[] resolveIndirectMethodCall(String tempVar) {
+
+        if (tempVar == null || !tempVar.matches("^t\\d+$")) {
+            return null;
+        }
+
+        List<TACInstruction> instructions = tacGenerator.getInstructions();
+
+        // Buscar hacia atrás la asignación: t1 = myDog.speak
+        for (int i = instructions.size() - 1; i >= 0; i--) {
+            TACInstruction tac = instructions.get(i);
+
+            if (tac.getOp() == TACInstruction.OpType.ASSIGN &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(tempVar)) {
+
+                String source = tac.getArg1();
+
+                if (source != null && source.contains(".")) {
+                    int dotIndex = source.indexOf('.');
+                    String objName = source.substring(0, dotIndex);
+                    String methodName = source.substring(dotIndex + 1);
+
+                    Symbol objSymbol = getObjectSymbol(objName);
+                    if (objSymbol == null) {
+                        return null;
+                    }
+
+                    String className = objSymbol.getName();  // ← Usar getName() porque ya es el Symbol de la clase
+                    if (className == null) {
+                        return null;
+                    }
+
+                    // Buscar clase real del método (puede estar en superclase)
+                    String actualClassName = findClassWithMethod(className, methodName);
+                    if (actualClassName == null) {
+                        actualClassName = className;
+                    }
+
+                    return new String[]{objName, methodName, actualClassName};
+                }
+
+                break;
+            }
+        }
+
+        return null;
+    }
     /**
      * Verifica si un valor es un string literal
      */
@@ -1663,7 +1911,7 @@ public class MIPSGenerator {
 
         // Si arg2 es inmediato, cargarlo a registro
         if (isImmediate(arg2)) {
-            arg2Reg = allocator.getReg("temp_cmp_imm");
+            arg2Reg = allocator.getReg("temp_cmp_imm_" + result); // Nombre único
             instructions.add(MIPSInstruction.li(arg2Reg, Integer.parseInt(arg2)));
             needsFree = true;
         } else {
@@ -1672,39 +1920,38 @@ public class MIPSGenerator {
 
         // Generar comparación según el operador
         switch (op) {
+            case "<=":
+                // temp = (arg1 <= arg2) = !(arg1 > arg2) = !(arg2 < arg1)
+                String tempLe = allocator.getReg("temp_le_" + result); // Nombre único
+                instructions.add(MIPSInstruction.typeR(OpCode.SLT, tempLe, arg2Reg, arg1Reg));
+                instructions.add(MIPSInstruction.typeI(OpCode.XORI, resultReg, tempLe, 1));
+                allocator.freeRegister(tempLe);
+                break;
+
             case "<":
-                // result = (arg1 < arg2) ? 1 : 0
                 instructions.add(MIPSInstruction.typeR(OpCode.SLT, resultReg, arg1Reg, arg2Reg));
                 break;
 
-            case "<=":
-                // result = !(arg2 < arg1)
-                instructions.add(MIPSInstruction.typeR(OpCode.SLT, resultReg, arg2Reg, arg1Reg));
-                instructions.add(MIPSInstruction.typeI(OpCode.XORI, resultReg, resultReg, 1));
-                break;
-
             case ">":
-                // result = (arg2 < arg1)
                 instructions.add(MIPSInstruction.typeR(OpCode.SLT, resultReg, arg2Reg, arg1Reg));
                 break;
 
             case ">=":
-                // result = !(arg1 < arg2)
-                instructions.add(MIPSInstruction.typeR(OpCode.SLT, resultReg, arg1Reg, arg2Reg));
-                instructions.add(MIPSInstruction.typeI(OpCode.XORI, resultReg, resultReg, 1));
+                String tempGe = allocator.getReg("temp_ge_" + result);
+                instructions.add(MIPSInstruction.typeR(OpCode.SLT, tempGe, arg1Reg, arg2Reg));
+                instructions.add(MIPSInstruction.typeI(OpCode.XORI, resultReg, tempGe, 1));
+                allocator.freeRegister(tempGe);
                 break;
 
             case "==":
-                // result = (arg1 == arg2) ? 1 : 0
-                String tempEq = allocator.getReg("temp_eq");
+                String tempEq = allocator.getReg("temp_eq_" + result);
                 instructions.add(MIPSInstruction.typeR(OpCode.SUB, tempEq, arg1Reg, arg2Reg));
                 instructions.add(MIPSInstruction.typeR(OpCode.SEQ, resultReg, tempEq, "$zero"));
                 allocator.freeRegister(tempEq);
                 break;
 
             case "!=":
-                // result = (arg1 != arg2) ? 1 : 0
-                String tempNe = allocator.getReg("temp_ne");
+                String tempNe = allocator.getReg("temp_ne_" + result);
                 instructions.add(MIPSInstruction.typeR(OpCode.SUB, tempNe, arg1Reg, arg2Reg));
                 instructions.add(MIPSInstruction.typeR(OpCode.SNE, resultReg, tempNe, "$zero"));
                 allocator.freeRegister(tempNe);
@@ -1810,30 +2057,67 @@ public class MIPSGenerator {
         String relop = tac.getRelop();
         String label = tac.getLabel();
 
-        String arg1Reg = allocator.getReg(arg1);
+        // CASO 1: Comparación directa - if x < y goto L1
+        if (relop != null && !relop.isEmpty()) {
+            String arg1Reg = allocator.getReg(arg1);
+            String arg2Reg;
+            boolean needsFree = false;
 
-        // MEJORA: Si arg2 es inmediato, cargarlo a registro
-        String arg2Reg;
-        boolean needsFree = false;
+            if (isImmediate(arg2)) {
+                arg2Reg = allocator.getReg("temp_if_cmp");
+                instructions.add(MIPSInstruction.li(arg2Reg, Integer.parseInt(arg2)));
+                needsFree = true;
+            } else {
+                arg2Reg = allocator.getReg(arg2);
+            }
 
-        if (isImmediate(arg2)) {
-            arg2Reg = allocator.getReg("temp_cmp");
-            instructions.add(MIPSInstruction.li(arg2Reg, Integer.parseInt(arg2)));
-            needsFree = true;
-        } else {
-            arg2Reg = allocator.getReg(arg2);
+            OpCode branchOp = getMipsComparisonBranchOp(relop);
+            instructions.add(MIPSInstruction.branch(branchOp, arg1Reg, arg2Reg, label));
+
+            if (needsFree) {
+                allocator.freeRegister(arg2Reg);
+            }
+            return;
         }
 
-        OpCode branchOp = getMipsComparisonBranchOp(relop);
-        instructions.add(MIPSInstruction.branch(branchOp, arg1Reg, arg2Reg, label));
+        // CASO 2: Variable booleana - if t2 == 0 goto L1
+        // Esto significa: "Si la condición es FALSA, salta"
+        String condReg = allocator.getReg(arg1);
 
-        if (needsFree) {
-            allocator.freeRegister(arg2Reg);
+        if (arg2 != null && arg2.equals("0")) {
+            // if condition == 0 goto label → beqz condition, label
+            instructions.add(MIPSInstruction.branchUnary(OpCode.BEQZ, condReg, label));
+        } else if (arg2 != null && arg2.equals("1")) {
+            // if condition == 1 goto label → bnez condition, label
+            instructions.add(MIPSInstruction.branchUnary(OpCode.BNEZ, condReg, label));
+        } else if (arg2 != null) {
+            // if condition == X goto label → beq condition, X, label
+            String arg2Reg;
+            boolean needsFree = false;
+
+            if (isImmediate(arg2)) {
+                arg2Reg = allocator.getReg("temp_if_bool");
+                instructions.add(MIPSInstruction.li(arg2Reg, Integer.parseInt(arg2)));
+                needsFree = true;
+            } else {
+                arg2Reg = allocator.getReg(arg2);
+            }
+
+            instructions.add(MIPSInstruction.branch(OpCode.BEQ, condReg, arg2Reg, label));
+
+            if (needsFree) {
+                allocator.freeRegister(arg2Reg);
+            }
+        } else {
+            // if condition goto label (sin comparación explícita)
+            // Asume: salta si condition != 0
+            instructions.add(MIPSInstruction.branchUnary(OpCode.BNEZ, condReg, label));
         }
     }
 
     /**
      * Genera llamada a función sin asignación
+     * Guarda contexto antes de llamadas (incluye recursión)
      */
     private void generateCall(TACInstruction tac) {
         String functionName = tac.getArg1();
@@ -1841,7 +2125,6 @@ public class MIPSGenerator {
 
         if (functionName.equals("print") && !params.isEmpty()) {
             String param = params.get(0);
-
             expandAndPrint(param, allocator.getCurrentLine());
             return;
         }
@@ -1852,10 +2135,18 @@ public class MIPSGenerator {
             return;
         }
 
-        // Para otras funciones, comportamiento normal
-        generateParameters(params);
+        // CRÍTICO PARA RECURSIÓN: Guardar contexto ANTES de pasar parámetros
+        // Esto incluye variables locales que pueden ser usadas después del return
         allocator.saveTemporaries();
+
+        // Pasar parámetros
+        generateParameters(params);
+
+        // Llamar función (puede ser recursiva)
         instructions.add(MIPSInstruction.jump(OpCode.JAL, functionName));
+
+        // Después de retornar, el contexto se restaura automáticamente
+        // porque cada llamada tiene su propio frame
     }
 
     /**
@@ -1866,6 +2157,40 @@ public class MIPSGenerator {
         String functionName = tac.getArg1();
         List<String> params = tac.getParams();
 
+        // Detectar si es llamada indirecta a método heredado
+        String[] methodInfo = resolveIndirectMethodCall(functionName);
+
+        if (methodInfo != null) {
+            String objName = methodInfo[0];
+            String methodName = methodInfo[1];
+            String className = methodInfo[2];
+
+            instructions.add(MIPSInstruction.comment("Indirect method call: " + result + " = " + objName + "." + methodName + "()"));
+
+            // Obtener registro del objeto
+            String objReg = allocator.getReg(objName);
+            instructions.add(MIPSInstruction.move("$a0", objReg));
+
+            // Parámetros adicionales
+            Register[] argRegs = {Register.A1, Register.A2, Register.A3};
+            for (int i = 0; i < params.size() && i < 3; i++) {
+                String paramReg = allocator.getReg(params.get(i));
+                instructions.add(MIPSInstruction.move(argRegs[i].getName(), paramReg));
+            }
+
+            // Llamar: ClassName_methodName
+            allocator.saveTemporaries();
+            instructions.add(MIPSInstruction.jump(OpCode.JAL, className + "_" + methodName));
+
+            // Capturar retorno
+            String resultReg = allocator.getReg(result);
+            instructions.add(MIPSInstruction.move(resultReg, "$v0"));
+            allocator.markDirty(resultReg);
+
+            return;  // ← MUY IMPORTANTE
+        }
+
+        // Caso normal (función directa)
         generateParameters(params);
         allocator.saveTemporaries();
         instructions.add(MIPSInstruction.jump(OpCode.JAL, functionName));
@@ -1994,35 +2319,104 @@ public class MIPSGenerator {
         }
 
         instructions.add(MIPSInstruction.label(functionName));
+
         int localSpace = calculateLocalSpace();
+        int paramsSpace = Math.min(paramCount, 4) * 4;
 
-        // CORRECCIÓN: Incluir espacio para parámetros en el frame
-        int paramsSpace = Math.min(paramCount, 4) * 4; // Espacio para hasta 4 params
-        int frameSize = 8 + paramsSpace + localSpace; // $fp + $ra + params + locales
+        // Reservar espacio para TODOS los registros $s que se usarán
+        int savedRegsSpace = 32; // 8 registros $s × 4 bytes = 32 bytes
 
-        // Crear stack frame
+        // Frame layout
+        int frameSize = 8 + savedRegsSpace + paramsSpace + localSpace;
+
+        // 1. Reservar espacio en el stack
         instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$sp", "$sp", -frameSize));
-        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$fp", (frameSize - 8) + "($sp)"));
-        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$ra", (frameSize - 4) + "($sp)"));
+
+        // 2. Guardar $fp ANTERIOR
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$fp", "0($sp)"));
+
+        // 3. Guardar $ra
+        instructions.add(MIPSInstruction.loadStore(OpCode.SW, "$ra", "4($sp)"));
+
+        // 4. **NUEVO: Guardar TODOS los registros $s0-$s7**
+        for (int i = 0; i < allocator.getSavedRegisters().length; i++) {
+            int offset = 8 + (i * 4);
+            instructions.add(MIPSInstruction.loadStore(
+                    OpCode.SW,
+                    allocator.getSavedRegisters()[i],
+                    offset + "($sp)"
+            ));
+        }
+        instructions.add(MIPSInstruction.comment("Saved $s0-$s7"));
+
+        // 5. Establecer nuevo $fp
         instructions.add(MIPSInstruction.move("$fp", "$sp"));
 
         // Guardar parámetros DESPUÉS de $fp y $ra
         Register[] argRegs = {Register.A0, Register.A1, Register.A2, Register.A3};
         for (int i = 0; i < Math.min(paramCount, 4); i++) {
-            int offset = i * 4; // Offsets 0, 4, 8, 12 desde el inicio del frame
+            int offset = 8 + savedRegsSpace + (i * 4); // 8 + 32 = 40
             instructions.add(MIPSInstruction.loadStore(
                     OpCode.SW,
                     argRegs[i].getName(),
-                    offset + "($fp)" // ← USAR $fp, no $sp
+                    offset + "($fp)"
             ));
+            instructions.add(MIPSInstruction.comment("Saved param " + i + " at " + offset + "($fp)"));
         }
 
+        instructions.add(MIPSInstruction.comment("Frame size: " + frameSize +
+                " (8 overhead + 32 saved regs + " + paramsSpace +
+                " params + " + localSpace + " locals)"));
+
+        // 7. Reset allocator y cargar parámetros
         allocator.reset();
+
+        if (funcSym != null) {
+            loadFunctionParameters(funcSym, isMethod, savedRegsSpace);
+        }
     }
 
+    /**
+     * Carga los parámetros desde el stack frame
+     * Considera el espacio de registros saved
+     */
+    private void loadFunctionParameters(Symbol funcSym, boolean isMethod, int savedRegsSpace) {
+        if (funcSym == null || funcSym.getParams() == null) return;
+
+        List<Symbol> params = funcSym.getParams();
+        instructions.add(MIPSInstruction.comment("Loading parameters from frame"));
+
+        for (int i = 0; i < params.size(); i++) {
+            Symbol param = params.get(i);
+            String paramName = param.getName();
+
+            // OFFSET CORREGIDO: 8 (overhead) + 32 (saved regs) + param_index * 4
+            int paramOffset = 8 + savedRegsSpace + (i * 4); // = 40 + i*4
+
+            String paramReg;
+            if (i < 4) {
+                paramReg = "$s" + i;
+                allocator.forceRegisterMapping(paramName, paramReg);
+            } else {
+                paramReg = allocator.getReg(paramName);
+            }
+
+            instructions.add(MIPSInstruction.loadStore(
+                    OpCode.LW,
+                    paramReg,
+                    paramOffset + "($fp)"
+            ));
+
+            instructions.add(MIPSInstruction.comment(
+                    "Loaded " + paramName + " from " + paramOffset + "($fp) into " + paramReg
+            ));
+
+            allocator.markClean(paramReg);
+        }
+    }
 
     /**
-     * Genera epílogo de función
+     * Genera epílogo de función - CON RESTAURACIÓN DE REGISTROS $s
      */
     private void generateFunctionEpilog(TACInstruction tac) {
         String functionName = tac.getLabel();
@@ -2035,15 +2429,37 @@ public class MIPSGenerator {
 
         int localSpace = calculateLocalSpace();
         int paramsSpace = Math.min(paramCount, 4) * 4;
-        int frameSize = 8 + paramsSpace + localSpace;
+        int savedRegsSpace = 32; // 8 registros $s
+        int frameSize = 8 + savedRegsSpace + paramsSpace + localSpace;
 
+        // PASO 1: Guardar registros dirty
         allocator.flushAll();
 
-        instructions.add(MIPSInstruction.move(Register.SP.getName(), Register.FP.getName()));
-        instructions.add(MIPSInstruction.loadStore(OpCode.LW, Register.FP.getName(), (frameSize - 8) + "(" + Register.SP.getName() + ")"));
-        instructions.add(MIPSInstruction.loadStore(OpCode.LW, Register.RA.getName(), (frameSize - 4) + "(" + Register.SP.getName() + ")"));
-        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, Register.SP.getName(), Register.SP.getName(), frameSize));
-        instructions.add(MIPSInstruction.jumpReg(Register.RA.getName()));
+        // PASO 2: **RESTAURAR registros $s0-$s7**
+        for (int i = 0; i < allocator.getSavedRegisters().length; i++) {
+            int offset = 8 + (i * 4);
+            instructions.add(MIPSInstruction.loadStore(
+                    OpCode.LW,
+                    allocator.getSavedRegisters()[i],
+                    offset + "($fp)"
+            ));
+        }
+        instructions.add(MIPSInstruction.comment("Restored $s0-$s7"));
+
+        // PASO 3: Restaurar $fp anterior
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, "$t9", "0($fp)"));
+
+        // PASO 4: Restaurar $ra
+        instructions.add(MIPSInstruction.loadStore(OpCode.LW, "$ra", "4($fp)"));
+
+        // PASO 5: Restaurar $sp
+        instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$sp", "$fp", frameSize));
+
+        // PASO 6: Restaurar $fp
+        instructions.add(MIPSInstruction.move("$fp", "$t9"));
+
+        // PASO 7: Retornar
+        instructions.add(MIPSInstruction.jumpReg("$ra"));
 
         currentFunction = null;
     }
@@ -2363,10 +2779,16 @@ public class MIPSGenerator {
         // Caso 2: es variable declarada (busca símbolo)
         Symbol varSym = tacGenerator.getSymbol(objName);
         if (varSym != null) {
-            return tacGenerator.getSymbol(varSym.getType());
+            String typeName = varSym.getType();
+            if (typeName != null) {
+                Symbol classSymbol = tacGenerator.getSymbol(typeName);
+                return classSymbol;
+            } else {
+            }
+        } else {
         }
 
-        // Caso 3: es un temporal -> debes tener un mapa tempTypeMap
+        // Caso 3: es un temporal
         if (tempTypeMap.containsKey(objName)) {
             return tacGenerator.getSymbol(tempTypeMap.get(objName));
         }
