@@ -3,23 +3,10 @@ newline: .asciiz "\n"
 space: .asciiz " "
 true_str: .asciiz "true"
 false_str: .asciiz "false"
-str_0: .asciiz "Hello, Compiscript!"
-str_1: .asciiz "5 + 1 = "
-str_2: .asciiz "Greater than 5"
-str_3: .asciiz "5 or less"
-str_4: .asciiz "Result is now "
-str_5: .asciiz "Loop index: "
-str_6: .asciiz "It's seven"
-str_7: .asciiz "It's six"
-str_8: .asciiz "Something else"
-str_9: .asciiz "Risky access: "
-str_10: .asciiz "Caught an error: "
-str_11: .asciiz "hugo"
-str_12: .asciiz " makes a sound."
-.align 2
-numbers: .space 24  # Array de 6 elementos
-.align 2
-matrix: .space 20  # Array de 5 elementos
+concat_buffer: .space 512
+int_buffer: .space 32
+str_0: .asciiz "Hola "
+str_1: .asciiz "Juan"
 
 
 .text
@@ -27,249 +14,75 @@ matrix: .space 20  # Array de 5 elementos
 main:
     move    $fp, $sp
 
-    li      $t0, 314
-    move    $t1, $t0
-    la      $t0, str_0
-    move    $t2, $t0
-    li      $t0, 1
-    la      $t3, numbers
-    sw      $t0, 0($t3)
-    li      $t0, 2
-    la      $t3, numbers
-    sw      $t0, 4($t3)
-    li      $t0, 3
-    la      $t3, numbers
-    sw      $t0, 8($t3)
-    li      $t0, 4
-    la      $t3, numbers
-    sw      $t0, 12($t3)
-    li      $t0, 5
-    la      $t3, numbers
-    sw      $t0, 16($t3)
-    li      $t0, 1
-    la      $t4, matrix
-    sw      $t0, 0($t4)
-    li      $t0, 2
-    la      $t4, matrix
-    sw      $t0, 0($t4)
-    li      $t0, 3
-    la      $t4, matrix
-    sw      $t0, 4($t4)
-    li      $t0, 4
-    la      $t4, matrix
-    sw      $t0, 4($t4)
-    li      $t0, 5
-    move    $a0, $t0
-    jal     makeAdder
-    move    $t0, $v0
-    move    $t2, $t0
-    la      $t0, str_1
-    # String concat: t1 = t2 + addFive
-    move    $a0, $t2
-    jal     int_to_string
-    move    $t1, $v0
-    move    $a0, $t0
+    la      $t1, str_1
+    li      $t0, 25
+    # new Persona
+    li      $a0, 12
+    li      $v0, 9
+    syscall 
+    move    $s1, $v0
+    move    $a0, $s1
     move    $a1, $t1
-    jal     concat_strings
-    move    $t2, $v0
-    move    $a0, $t2
-    jal     print
-    li      $t2, 5
-    slt     $t0, $t2, $t3
-    li      $t4, 0
-    beq     $t0, $t4, L1
-    la      $t2, str_2
-    move    $a0, $t2
-    jal     print
-    j       L2
-L1:
-    la      $t3, str_3
-    move    $a0, $t3
-    jal     print
-L2:
-L3:
-    li      $t3, 10
-    slt     $t2, $t0, $t3
-    li      $t4, 0
-    beq     $t2, $t4, L4
-    li      $t3, 1
-    # String concat: t3 = addFive + t2
+    move    $a2, $t0
+    jal     Persona_constructor
+    # Property get: t3 = p.edad
+    lw      $t1, 8($s1)
+    la      $a0, str_0
+    li      $v0, 4
+    syscall 
     move    $a0, $t0
-    jal     int_to_string
-    move    $t1, $v0
-    move    $a0, $t1
-    move    $a1, $t3
-    jal     concat_strings
-    move    $t3, $v0
-    move    $t2, $t3
-    j       L3
-L4:
-L5:
-    la      $t0, str_4
-    # String concat: t3 = t1 + addFive
-    move    $a0, $t2
-    jal     int_to_string
-    move    $t1, $v0
-    move    $a0, $t0
-    move    $a1, $t1
-    jal     concat_strings
-    move    $t3, $v0
-    move    $a0, $t3
     jal     print
-    li      $t3, 1
-    sub     $t2, $t0, $t3
-    move    $t0, $t2
-    li      $t2, 7
-    slt     $t3, $t2, $t0
-    li      $t4, 0
-    bne     $t3, $t4, L5
-L6:
-    li      $t3, 0
-    move    $t5, $t3
-L7:
-    li      $t3, 3
-    slt     $t2, $t5, $t3
-    li      $t4, 0
-    beq     $t2, $t4, L8
-    la      $t3, str_5
-    # String concat: t2 = t3 + i
-    move    $a0, $t3
-    move    $a1, $t5
-    jal     concat_strings
-    move    $t3, $v0
-    move    $a0, $t3
-    jal     print
-    li      $t3, 1
-    # String concat: t3 = i + t2
-    move    $a0, $t5
-    move    $a1, $t3
-    jal     concat_strings
-    move    $t3, $v0
-    move    $t5, $t3
-    j       L7
-L8:
-    move    $t2, $t0
-    li      $t3, 7
-    beq     $t2, $t3, L10
-    li      $t6, 6
-    beq     $t2, $t6, L11
-    j       L12
-L10:
-    la      $t7, str_6
-    move    $a0, $t7
-    jal     print
-    j       L9
-L11:
-    la      $t7, str_7
-    move    $a0, $t7
-    jal     print
-    j       L9
-L12:
-    la      $t7, str_8
-    move    $a0, $t7
-    jal     print
-L9:
-    # try_begin -> catch: L13
-    li      $t7, 10
-    la      $t3, numbers
-    sll     $t2, $t7, 2
-    add     $t2, $t3, $t2
-    lw      $t6, 0($t2)
-    move    $t7, $t6
-    la      $t6, str_9
-    # String concat: t2 = t1 + risky
-    move    $a0, $t6
-    move    $a1, $t7
-    jal     concat_strings
-    move    $t6, $v0
-    move    $a0, $t6
-    jal     print
-    # try_end
-    j       L14
-L13:
-    move    $t6, $t0
-    la      $t1, str_10
-    # String concat: t1 = t2 + err
-    move    $a0, $t1
-    move    $a1, $t6
-    jal     concat_strings
-    move    $t1, $v0
-    move    $a0, $t1
-    jal     print
-L14:
 
     # Fin del programa
     li      $v0, 10
     syscall
 
-    # Class Animal
-    la      $t1, str_11
-    # end Class Animal
+    # Class Persona
+    # end Class Persona
 
-    # Class Cat
-    # end Class Cat
-
-constructor:
-    addi    $sp, $sp, -8
-    sw      $fp, 0($sp)
-    sw      $ra, 4($sp)
+Persona_saludar:
+    addi    $sp, $sp, -12
+    sw      $fp, 4($sp)
+    sw      $ra, 8($sp)
     move    $fp, $sp
     sw      $a0, 0($fp)
-    move    $t0, $t1
+    la      $t0, str_0
+    # Property get: t2 = this.nombre
+    lw      $t1, 0($a0)
+    # String concat: t3 = t1 + t2
+    move    $a0, $t0
+    move    $a1, $t1
+    jal     concat_strings
+    move    $t1, $v0
+    move    $v0, $t1
+    j       saludar_epilog
+saludar_epilog:
+    move    $sp, $fp
+    lw      $fp, 4($sp)
+    lw      $ra, 8($sp)
+    addi    $sp, $sp, 12
+    jr      $ra
+
+Persona_constructor:
+    addi    $sp, $sp, -28
+    sw      $fp, 20($sp)
+    sw      $ra, 24($sp)
+    move    $fp, $sp
+    sw      $a0, 0($fp)
+    sw      $a1, 4($fp)
+    sw      $a2, 8($fp)
+    # Property set: this.nombre = nombre
+    lw      $t8, 0($fp)
+    sw      $t0, 0($t8)
+    # Property set: this.edad = edad
+    lw      $t8, 0($fp)
+    sw      $t1, 8($t8)
 constructor_epilog:
     move    $sp, $fp
-    lw      $fp, 0($sp)
-    lw      $ra, 4($sp)
-    addi    $sp, $sp, 8
+    lw      $fp, 20($sp)
+    lw      $ra, 24($sp)
+    addi    $sp, $sp, 28
     jr      $ra
-
-speak:
-    addi    $sp, $sp, -8
-    sw      $fp, 0($sp)
-    sw      $ra, 4($sp)
-    move    $fp, $sp
-    move    $t0, $t1
-    la      $t2, str_12
-    # String concat: t4 = t1 + t2
-    move    $a0, $t0
-    move    $a1, $t2
-    jal     concat_strings
-    move    $t2, $v0
-    move    $v0, $t2
-    j       speak_epilog
-speak_epilog:
-    move    $sp, $fp
-    lw      $fp, 0($sp)
-    lw      $ra, 4($sp)
-    addi    $sp, $sp, 8
-    jr      $ra
-
-makeAdder:
-    addi    $sp, $sp, -8
-    sw      $fp, 0($sp)
-    sw      $ra, 4($sp)
-    move    $fp, $sp
-    sw      $a0, 0($fp)
-    li      $t0, 5
-    # String concat: t2 = x + t1
-    move    $a0, $t1
-    jal     int_to_string
-    move    $t1, $v0
-    move    $a0, $t1
-    move    $a1, $t0
-    jal     concat_strings
-    move    $t0, $v0
-    move    $v0, $t0
-    j       makeAdder_epilog
-makeAdder_epilog:
-    move    $sp, $fp
-    lw      $fp, 0($sp)
-    lw      $ra, 4($sp)
-    addi    $sp, $sp, 8
-    jr      $ra
-
-    # Class Dog
-    # end Class Dog
 
 print:
     addi    $sp, $sp, -4
@@ -307,4 +120,63 @@ print_newline:
     la      $a0, newline
     li      $v0, 4
     syscall 
+    jr      $ra
+concat_strings:
+    addi    $sp, $sp, -20
+    sw      $ra, 16($sp)
+    sw      $s0, 12($sp)
+    sw      $s1, 8($sp)
+    sw      $s2, 4($sp)
+    sw      $s3, 0($sp)
+    move    $s0, $a0
+    move    $s1, $a1
+    move    $t0, $s0
+    li      $s2, 0
+cs_len1:
+    lb      $t1, 0($t0)
+    beqz    $t1, cs_len1_done
+    addi    $t0, $t0, 1
+    addi    $s2, $s2, 1
+    j       cs_len1
+cs_len1_done:
+    move    $t0, $s1
+    li      $s3, 0
+cs_len2:
+    lb      $t1, 0($t0)
+    beqz    $t1, cs_len2_done
+    addi    $t0, $t0, 1
+    addi    $s3, $s3, 1
+    j       cs_len2
+cs_len2_done:
+    add     $a0, $s2, $s3
+    addi    $a0, $a0, 1
+    li      $v0, 9
+    syscall 
+    move    $t2, $v0
+    move    $t0, $s0
+    move    $t1, $t2
+cs_copy1:
+    lb      $t3, 0($t0)
+    beqz    $t3, cs_copy1_done
+    sb      $t3, 0($t1)
+    addi    $t0, $t0, 1
+    addi    $t1, $t1, 1
+    j       cs_copy1
+cs_copy1_done:
+    move    $t0, $s1
+cs_copy2:
+    lb      $t3, 0($t0)
+    sb      $t3, 0($t1)
+    beqz    $t3, cs_done
+    addi    $t0, $t0, 1
+    addi    $t1, $t1, 1
+    j       cs_copy2
+cs_done:
+    move    $v0, $t2
+    lw      $s3, 0($sp)
+    lw      $s2, 4($sp)
+    lw      $s1, 8($sp)
+    lw      $s0, 12($sp)
+    lw      $ra, 16($sp)
+    addi    $sp, $sp, 20
     jr      $ra

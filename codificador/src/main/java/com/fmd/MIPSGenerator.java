@@ -908,20 +908,17 @@ public class MIPSGenerator {
                 op.equals("/") || op.equals("%");
     }
 
-    /**
-     * Detecta si la operación involucra strings
-     * MEJORADO: Rastrea temporales que contienen strings
-     */
     private boolean isStringOperation(String arg1, String arg2) {
         // Caso 1: Literal de string directo
         if (isStringLiteral(arg1) || isStringLiteral(arg2)) {
             return true;
         }
 
-        // Caso 2: Variable con tipo string conocido
+        // Caso 2: Variable con tipo string conocido EN LA TABLA DE SÍMBOLOS
         Symbol sym1 = tacGenerator.getSymbol(arg1);
         Symbol sym2 = tacGenerator.getSymbol(arg2);
 
+        //  VERIFICAR TIPO EXPLÍCITO (no rastrear temporales)
         if (sym1 != null && sym1.getType() != null && sym1.getType().equals("string")) {
             return true;
         }
@@ -929,9 +926,47 @@ public class MIPSGenerator {
             return true;
         }
 
-        // Caso 3: NUEVO - Rastrear temporales que contienen strings
-        if (temporalContainsString(arg1) || temporalContainsString(arg2)) {
+        //  NUEVO: Solo rastrear temporales si tienen asignación DIRECTA de string
+        if (isTemporalWithDirectStringAssignment(arg1) || isTemporalWithDirectStringAssignment(arg2)) {
             return true;
+        }
+
+        return false;
+    }
+
+    /**
+     *  NUEVO: Verifica si un temporal fue asignado DIRECTAMENTE desde un string literal
+     * NO hace análisis recursivo para evitar falsos positivos
+     */
+    private boolean isTemporalWithDirectStringAssignment(String temporal) {
+        if (temporal == null || !temporal.matches("^t\\d+$")) {
+            return false;
+        }
+
+        // Buscar la ÚLTIMA asignación de este temporal
+        for (int i = tacGenerator.getInstructions().size() - 1; i >= 0; i--) {
+            TACInstruction tac = tacGenerator.getInstructions().get(i);
+
+            if (tac.getOp() == TACInstruction.OpType.ASSIGN &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(temporal)) {
+
+                String source = tac.getArg1();
+
+                //  SOLO considerar string si es LITERAL directo
+                if (isStringLiteral(source)) {
+                    return true;
+                }
+
+                //  NUEVO: Si viene de una variable con tipo string explícito
+                Symbol sym = tacGenerator.getSymbol(source);
+                if (sym != null && sym.getType() != null && sym.getType().equals("string")) {
+                    return true;
+                }
+
+                // Si no es ninguna de las anteriores, NO es string
+                return false;
+            }
         }
 
         return false;
