@@ -941,16 +941,19 @@ public class MIPSGenerator {
     }
 
     /**
-     *  NUEVO: Verifica si un temporal fue asignado DIRECTAMENTE desde un string literal
-     * NO hace análisis recursivo para evitar falsos positivos
+     * Verifica si un temporal fue asignado DIRECTAMENTE desde un string literal
+     * Busca HACIA ATRÁS desde la línea actual del allocator
      */
     private boolean isTemporalWithDirectStringAssignment(String temporal) {
         if (temporal == null || !temporal.matches("^t\\d+$")) {
             return false;
         }
 
-        // Buscar la ÚLTIMA asignación de este temporal
-        for (int i = tacGenerator.getInstructions().size() - 1; i >= 0; i--) {
+        // CRÍTICO: Buscar solo hasta la línea actual
+        int searchLimit = Math.min(allocator.getCurrentLine(), tacGenerator.getInstructions().size());
+
+        // Buscar la ÚLTIMA asignación ANTES de la línea actual
+        for (int i = searchLimit - 1; i >= 0; i--) {
             TACInstruction tac = tacGenerator.getInstructions().get(i);
 
             if (tac.getOp() == TACInstruction.OpType.ASSIGN &&
@@ -959,18 +962,15 @@ public class MIPSGenerator {
 
                 String source = tac.getArg1();
 
-                //  SOLO considerar string si es LITERAL directo
                 if (isStringLiteral(source)) {
                     return true;
                 }
 
-                //  NUEVO: Si viene de una variable con tipo string explícito
                 Symbol sym = tacGenerator.getSymbol(source);
                 if (sym != null && sym.getType() != null && sym.getType().equals("string")) {
                     return true;
                 }
 
-                // Si no es ninguna de las anteriores, NO es string
                 return false;
             }
         }
@@ -1134,59 +1134,6 @@ public class MIPSGenerator {
 
         return null;
     }
-    /**
-     * Verifica si un temporal contiene un string
-     * Busca en las instrucciones TAC previas para ver si fue asignado desde un string
-     */
-    private boolean temporalContainsString(String temporal) {
-        if (temporal == null || !temporal.matches("^t\\d+$")) {
-            return false;
-        }
-
-        // Buscar en las instrucciones TAC la asignación de este temporal
-        for (TACInstruction tac : tacGenerator.getInstructions()) {
-            if (tac.getOp() == TACInstruction.OpType.ASSIGN &&
-                    tac.getResult() != null &&
-                    tac.getResult().equals(temporal)) {
-
-                String source = tac.getArg1();
-
-                // Si se asignó desde un string literal
-                if (isStringLiteral(source)) {
-                    return true;
-                }
-
-                // Si se asignó desde una variable string
-                Symbol sym = tacGenerator.getSymbol(source);
-                if (sym != null && sym.getType() != null && sym.getType().equals("string")) {
-                    return true;
-                }
-
-                // Si se asignó desde otro temporal que es string (recursivo)
-                if (source != null && source.matches("^t\\d+$")) {
-                    return temporalContainsString(source);
-                }
-            }
-
-            // Si fue resultado de una concatenación previa
-            if (tac.getOp() == TACInstruction.OpType.BINARY_OP &&
-                    tac.getResult() != null &&
-                    tac.getResult().equals(temporal) &&
-                    tac.getOperator().equals("+")) {
-
-                // Si cualquiera de sus operandos era string, el resultado es string
-                if (isStringLiteral(tac.getArg1()) || isStringLiteral(tac.getArg2())) {
-                    return true;
-                }
-
-                if (temporalContainsString(tac.getArg1()) || temporalContainsString(tac.getArg2())) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
 
     /**
      * Verifica si un temporal contiene un entero
@@ -1239,7 +1186,7 @@ public class MIPSGenerator {
                     if (operator.equals("+")) {
                         // Si alguno es string, es concatenación, no aritmética
                         if (isStringLiteral(tac.getArg1()) || isStringLiteral(tac.getArg2()) ||
-                                temporalContainsString(tac.getArg1()) || temporalContainsString(tac.getArg2())) {
+                                isTemporalWithDirectStringAssignment(tac.getArg1()) || isTemporalWithDirectStringAssignment(tac.getArg2())) {
                             return false; // Es concatenación, no produce int
                         }
                     }
