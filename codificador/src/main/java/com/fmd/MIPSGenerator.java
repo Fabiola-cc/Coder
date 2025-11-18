@@ -482,6 +482,8 @@ public class MIPSGenerator {
                 break;
 
             case ASSIGN_CALL:
+                isMultipleCallInSequence(allocator.getCurrentLine());
+
                 // Detectar si es method call con asignación
                 String funcName = tac.getArg1();
                 if (funcName != null && funcName.contains(".")) {
@@ -519,6 +521,50 @@ public class MIPSGenerator {
                 instructions.add(MIPSInstruction.comment("Unsupported OpType: " + opType));
                 break;
         }
+    }
+
+    /**
+     * Detecta si esta es la segunda llamada recursiva en una secuencia
+     * Busca hacia atrás para ver si hay otra ASSIGN_CALL reciente
+     */
+    private void isMultipleCallInSequence(int currentLine) {
+        List<TACInstruction> tacs = tacGenerator.getInstructions();
+
+        // Buscar hacia atrás máximo 10 líneas
+        int lookback = Math.max(0, currentLine - 10);
+        int lookfront = Math.min(currentLine + 10, tacs.size());
+        int callCount = 0;
+
+        for (int i = currentLine - 1; i >= lookback; i--) {
+            TACInstruction prevTac = tacs.get(i);
+
+            // Si encontramos un LABEL, RETURN, o salto, ya no buscar más
+            if (prevTac.getOp() == TACInstruction.OpType.LABEL ||
+                    prevTac.getOp() == TACInstruction.OpType.RETURN ||
+                    prevTac.getOp() == TACInstruction.OpType.GOTO)
+                break;
+
+            // Contar llamadas
+            if (prevTac.getOp() == TACInstruction.OpType.ASSIGN_CALL)
+                callCount++;
+        }
+
+        for (int i = currentLine; i < lookfront; i++) {
+            TACInstruction prevTac = tacs.get(i);
+
+            // Si encontramos un LABEL, RETURN, o salto, ya no buscar más
+            if (prevTac.getOp() == TACInstruction.OpType.LABEL ||
+                    prevTac.getOp() == TACInstruction.OpType.RETURN ||
+                    prevTac.getOp() == TACInstruction.OpType.GOTO)
+                break;
+
+            // Contar llamadas
+            if (prevTac.getOp() == TACInstruction.OpType.ASSIGN_CALL)
+                callCount++;
+        }
+
+        // Si encontramos al menos una llamada antes, esta es la segunda
+        allocator.setmultipleRecursive(callCount > 1);
     }
 
     private void generatePropertyGet(TACInstruction tac) {
@@ -718,10 +764,12 @@ public class MIPSGenerator {
         }
 
         // CASO 5: Variable normal
+
+        // evitar mover literal a temporal
         String srcReg = allocator.getReg(src);
         String destReg = "";
 
-        if(srcReg.startsWith("$s")){ // CASO 5.1: Asignación de clases
+        if(srcReg.startsWith("$s")){ // CASO 5.1: registros saved
             destReg = allocator.getRegAssign(dest, src);
         } else {
             destReg = allocator.getReg(dest);
@@ -2187,7 +2235,7 @@ public class MIPSGenerator {
             instructions.add(MIPSInstruction.move(resultReg, "$v0"));
             allocator.markDirty(resultReg);
 
-            return;  // ← MUY IMPORTANTE
+            return;
         }
 
         // Caso normal (función directa)
@@ -2198,6 +2246,8 @@ public class MIPSGenerator {
         String resultReg = allocator.getReg(result);
         instructions.add(MIPSInstruction.move(resultReg, Register.V0.getName()));
         allocator.markDirty(resultReg);
+
+        allocator.setmultipleRecursive(false);
     }
 
     /**
@@ -2554,6 +2604,7 @@ public class MIPSGenerator {
         String resultReg = allocator.getReg(result);
         instructions.add(MIPSInstruction.move(resultReg, "$v0"));
         allocator.markDirty(resultReg);
+        allocator.setmultipleRecursive(false);
     }
 
     private void initializeObjectProperties(String objReg, Symbol classSymbol) {

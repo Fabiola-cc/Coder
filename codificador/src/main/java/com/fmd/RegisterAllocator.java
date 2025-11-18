@@ -48,6 +48,7 @@ public class RegisterAllocator {
 
     // Flag para registros
     private Boolean loadObject;
+    private Boolean multipleRecursive;
 
     
     // CONSTRUCTOR
@@ -64,6 +65,7 @@ public class RegisterAllocator {
         this.tempOffsets = new HashMap<>();
         this.nextTempOffset = 1000;
         this.loadObject = false;
+        this.multipleRecursive = false;
 
         // Inicializar registros temporales como libres
         for (int i = TEMP_REGISTERS.length - 1; i >= 0; i--) {
@@ -97,7 +99,7 @@ public class RegisterAllocator {
 
         // PASO 2: Si hay registros libres, tomar uno
         // 1) ¿Es un objeto? -> ponerlo en un $sX
-        if (loadObject) {
+        if (loadObject || multipleRecursive) {
             for (int i = 1; i < SAVED_REGISTERS.length; i++) { // $s1..$s7
                 String reg = "$s" + i;
                 RegisterDescriptor desc = registerState.get(reg);
@@ -130,7 +132,10 @@ public class RegisterAllocator {
             String reg = variableToRegister.get(tempToAssign);
             // Reemplazar uso de registro
             variableToRegister.put(variable, reg);
-            variableToRegister.remove(tempToAssign);
+
+            if(tempToAssign.matches("^t\\d+$")) // quitar del listado solo si es temporal
+                variableToRegister.remove(tempToAssign);
+
             lastUse.put(variable, currentLine); // actualizar uso
             return reg;
         }
@@ -143,7 +148,7 @@ public class RegisterAllocator {
 
         // PASO 2: Si hay registros libres, tomar uno
         // 1) ¿Es un objeto? -> ponerlo en un $sX
-        if (loadObject) {
+        if (loadObject || multipleRecursive) {
             for (int i = 1; i < SAVED_REGISTERS.length; i++) { // $s1..$s7
                 String reg = "$s" + i;
                 RegisterDescriptor desc = registerState.get(reg);
@@ -620,5 +625,8 @@ public class RegisterAllocator {
         }
 
         lastUse.put(variable, currentLine);
+      
+    public void setmultipleRecursive(Boolean multipleRecursive) {
+        this.multipleRecursive = multipleRecursive;
     }
 }
