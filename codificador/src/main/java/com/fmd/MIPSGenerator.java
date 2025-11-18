@@ -947,7 +947,6 @@ public class MIPSGenerator {
         String arg1 = tac.getArg1();
         String arg2 = tac.getArg2();
 
-        instructions.add(MIPSInstruction.comment("String concat (for print): " + result + " = " + arg1 + " + " + arg2));
 
         // NO HACER NADA MÁS
         // El temporal 'result' ahora representa una concatenación
@@ -958,7 +957,6 @@ public class MIPSGenerator {
      * Expande y imprime un parámetro que puede ser resultado de concatenaciones
      */
     private void expandAndPrint(String param, int currentLine) {
-        // Buscar hacia ATRÁS desde currentLine
         List<TACInstruction> instructions = tacGenerator.getInstructions();
 
         for (int i = currentLine - 1; i >= 0; i--) {
@@ -970,24 +968,30 @@ public class MIPSGenerator {
                     tac.getResult().equals(param) &&
                     isStringOperation(tac.getArg1(), tac.getArg2())) {
 
-                // Es una concatenación, expandir recursivamente
-                // Pasar 'i' como nueva línea actual para las búsquedas recursivas
+                // Expandir recursivamente CON el contexto de línea correcto
                 expandAndPrint(tac.getArg1(), i);
                 expandAndPrint(tac.getArg2(), i);
                 return;
             }
         }
 
-        // No es concatenación, imprimir directamente
-        printArgument(param);
+        // Imprimir directamente CON el contexto de línea
+        printArgument(param, currentLine);
     }
 
     /**
      * Imprime un argumento (puede ser string o int)
      */
-    private void printArgument(String arg) {
-        // PRIMERO: Detectar tipo antes de obtener registros
-
+    /**
+     * Imprime un argumento (puede ser string o int)
+     * CORREGIDO: Carga valores directamente sin depender del allocator
+     */
+    /**
+     * Imprime un argumento (puede ser string o int)
+     * @param arg El argumento a imprimir
+     * @param contextLine La línea del TAC desde donde buscar el valor
+     */
+    private void printArgument(String arg, int contextLine) {
         // Caso 1: String literal
         if (isStringLiteral(arg)) {
             String label = stringLiterals.get(arg);
@@ -1008,37 +1012,87 @@ public class MIPSGenerator {
         // Caso 3: Variable con símbolo conocido
         Symbol paramSym = tacGenerator.getSymbol(arg);
         if (paramSym != null && paramSym.getType() != null) {
-            String paramReg = allocator.getReg(arg);
-            instructions.add(MIPSInstruction.move("$a0", paramReg));
-
             String type = paramSym.getType();
-            if (type.equals("integer")) {
-                instructions.add(MIPSInstruction.li("$v0", 1));
-                instructions.add(MIPSInstruction.syscall());
-            } else if (type.equals("string")) {
+
+            if (type.equals("string")) {
+                String stringValue = findVariableValue(arg, contextLine);
+                if (stringValue != null && isStringLiteral(stringValue)) {
+                    String label = stringLiterals.get(stringValue);
+                    instructions.add(MIPSInstruction.la("$a0", label));
+                } else {
+                    String paramReg = allocator.getReg(arg);
+                    instructions.add(MIPSInstruction.move("$a0", paramReg));
+                }
                 instructions.add(MIPSInstruction.li("$v0", 4));
                 instructions.add(MIPSInstruction.syscall());
+                return;
+            } else if (type.equals("integer")) {
+                String intValue = findVariableValue(arg, contextLine);
+                if (intValue != null && isImmediate(intValue)) {
+                    instructions.add(MIPSInstruction.li("$a0", Integer.parseInt(intValue)));
+                } else {
+                    String paramReg = allocator.getReg(arg);
+                    instructions.add(MIPSInstruction.move("$a0", paramReg));
+                }
+                instructions.add(MIPSInstruction.li("$v0", 1));
+                instructions.add(MIPSInstruction.syscall());
+                return;
             }
-            return;
         }
 
-        // Caso 4: Temporal - detectar tipo por análisis
+        // Caso 4: Temporal - buscar valor en contexto correcto
+        if (arg.matches("^t\\d+$")) {
+            String value = findVariableValue(arg, contextLine);
+
+            if (value != null && isStringLiteral(value)) {
+                String label = stringLiterals.get(value);
+                instructions.add(MIPSInstruction.la("$a0", label));
+                instructions.add(MIPSInstruction.li("$v0", 4));
+                instructions.add(MIPSInstruction.syscall());
+                return;
+            }
+
+            if (value != null && isImmediate(value)) {
+                instructions.add(MIPSInstruction.li("$a0", Integer.parseInt(value)));
+                instructions.add(MIPSInstruction.li("$v0", 1));
+                instructions.add(MIPSInstruction.syscall());
+                return;
+            }
+
+            if (value != null) {
+                printArgument(value, contextLine);
+                return;
+            }
+        }
+
+        // Caso 5: Fallback
         String argReg = allocator.getReg(arg);
         instructions.add(MIPSInstruction.move("$a0", argReg));
-
-        if (temporalContainsString(arg)) {
-            instructions.add(MIPSInstruction.li("$v0", 4)); // print string
-            instructions.add(MIPSInstruction.syscall());
-        } else if (temporalContainsInt(arg)) {
-            instructions.add(MIPSInstruction.li("$v0", 1)); // print int
-            instructions.add(MIPSInstruction.syscall());
-        } else {
-            // Último recurso: usar función print genérica
-            allocator.saveTemporaries();
-            instructions.add(MIPSInstruction.jump(OpCode.JAL, "print"));
-        }
+        allocator.saveTemporaries();
+        instructions.add(MIPSInstruction.jump(OpCode.JAL, "print"));
     }
 
+    /**
+     * Encuentra el valor asignado a una variable/temporal en el TAC
+     * Busca la última asignación ANTES de maxLine
+     */
+    private String findVariableValue(String varName, int maxLine) {
+        List<TACInstruction> tacInstructions = tacGenerator.getInstructions();
+
+        // Buscar hacia atrás desde maxLine
+        for (int i = maxLine - 1; i >= 0; i--) {
+            TACInstruction tac = tacInstructions.get(i);
+
+            // Buscar asignaciones a esta variable
+            if (tac.getOp() == TACInstruction.OpType.ASSIGN &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(varName)) {
+                return tac.getArg1();
+            }
+        }
+
+        return null;
+    }
     /**
      * Verifica si un temporal contiene un string
      * Busca en las instrucciones TAC previas para ver si fue asignado desde un string
@@ -2143,7 +2197,6 @@ public class MIPSGenerator {
 
     private void generateConcatStrings() {
         instructions.add(MIPSInstruction.label("concat_strings"));
-        instructions.add(MIPSInstruction.comment("Concatena strings: $a0 + $a1 -> $v0 (nuevo heap)"));
 
         // Guardar registros
         instructions.add(MIPSInstruction.typeI(OpCode.ADDI, "$sp", "$sp", -20));
