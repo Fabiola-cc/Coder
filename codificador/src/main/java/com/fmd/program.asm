@@ -5,8 +5,10 @@ true_str: .asciiz "true"
 false_str: .asciiz "false"
 concat_buffer: .space 512
 int_buffer: .space 32
-str_0: .asciiz "Hola "
-str_1: .asciiz "Juan"
+str_0: .asciiz " makes a sound"
+str_1: .asciiz " says Woof!"
+str_2: .asciiz "Max"
+str_3: .asciiz "Golden"
 
 
 .text
@@ -14,75 +16,107 @@ str_1: .asciiz "Juan"
 main:
     move    $fp, $sp
 
-    la      $t1, str_1
-    li      $t0, 25
-    # new Persona
-    li      $a0, 12
+    la      $t1, str_2
+    move    $t0, $t1
+    li      $t2, 3
+    move    $t3, $t2
+    la      $t4, str_3
+    move    $t5, $t4
+    # new Dog
+    li      $a0, 32
     li      $v0, 9
     syscall 
     move    $s1, $v0
     move    $a0, $s1
-    move    $a1, $t1
-    move    $a2, $t0
-    jal     Persona_constructor
-    # Property get: t3 = p.edad
-    lw      $t1, 8($s1)
-    la      $a0, str_0
-    li      $v0, 4
-    syscall 
-    move    $a0, $t0
+    move    $a1, $t0
+    move    $a2, $t3
+    move    $a3, $t5
+    jal     Dog_constructor
+    # Property get: t1 = myDog.name
+    lw      $t5, 0($s1)
+    move    $a0, $t4
     jal     print
 
     # Fin del programa
     li      $v0, 10
     syscall
 
-    # Class Persona
-    # end Class Persona
+    # Class Animal
+    # end Class Animal
 
-Persona_saludar:
+Dog_bark:
     addi    $sp, $sp, -12
     sw      $fp, 4($sp)
     sw      $ra, 8($sp)
     move    $fp, $sp
     sw      $a0, 0($fp)
-    la      $t0, str_0
-    # Property get: t2 = this.nombre
-    lw      $t1, 0($a0)
-    # String concat: t3 = t1 + t2
+    # Property get: t3 = this.name
+    lw      $t0, 0($a0)
+    la      $t1, str_1
+    # String concat: t1 = t3 + t2
     move    $a0, $t0
     move    $a1, $t1
     jal     concat_strings
     move    $t1, $v0
     move    $v0, $t1
-    j       saludar_epilog
-saludar_epilog:
+    j       bark_epilog
+bark_epilog:
     move    $sp, $fp
     lw      $fp, 4($sp)
     lw      $ra, 8($sp)
     addi    $sp, $sp, 12
     jr      $ra
 
-Persona_constructor:
-    addi    $sp, $sp, -28
-    sw      $fp, 20($sp)
-    sw      $ra, 24($sp)
+Dog_constructor:
+    addi    $sp, $sp, -44
+    sw      $fp, 36($sp)
+    sw      $ra, 40($sp)
     move    $fp, $sp
     sw      $a0, 0($fp)
     sw      $a1, 4($fp)
     sw      $a2, 8($fp)
-    # Property set: this.nombre = nombre
+    sw      $a3, 12($fp)
+    # Property set: this.name = name
     lw      $t8, 0($fp)
     sw      $t0, 0($t8)
-    # Property set: this.edad = edad
+    # Property set: this.age = age
     lw      $t8, 0($fp)
     sw      $t1, 8($t8)
+    # Property set: this.breed = breed
+    lw      $t8, 0($fp)
+    sw      $t2, 20($t8)
 constructor_epilog:
     move    $sp, $fp
-    lw      $fp, 20($sp)
-    lw      $ra, 24($sp)
-    addi    $sp, $sp, 28
+    lw      $fp, 36($sp)
+    lw      $ra, 40($sp)
+    addi    $sp, $sp, 44
     jr      $ra
+
+Animal_speak:
+    addi    $sp, $sp, -12
+    sw      $fp, 4($sp)
+    sw      $ra, 8($sp)
+    move    $fp, $sp
+    sw      $a0, 0($fp)
+    # Property get: t1 = this.name
+    lw      $t0, 0($a0)
+    la      $t1, str_0
+    # String concat: t3 = t1 + t2
+    move    $a0, $t0
+    move    $a1, $t1
+    jal     concat_strings
+    move    $t1, $v0
+    move    $v0, $t1
+    j       speak_epilog
+speak_epilog:
+    move    $sp, $fp
+    lw      $fp, 4($sp)
+    lw      $ra, 8($sp)
+    addi    $sp, $sp, 12
+    jr      $ra
+
+    # Class Dog
+    # end Class Dog
 
 print:
     addi    $sp, $sp, -4

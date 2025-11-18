@@ -388,9 +388,36 @@ public class MIPSGenerator {
     private void generateInstruction(TACInstruction tac) {
         TACInstruction.OpType opType = tac.getOp();
 
+        // ✅ WORKAROUND: Detectar "t1 = myDog.speak" ANTES del switch
+        if (opType == TACInstruction.OpType.ASSIGN) {
+            String dest = tac.getResult();
+            String src = tac.getArg1();
+
+            // Verificar si es método (NO propiedad)
+            if (dest != null && dest.matches("^t\\d+$") &&
+                    src != null && src.contains(".")) {
+
+                int dotIndex = src.indexOf('.');
+                String objName = src.substring(0, dotIndex);
+                String memberName = src.substring(dotIndex + 1);
+
+                Symbol objSymbol = getObjectSymbol(objName);
+                if (objSymbol != null) {
+                    String className = objSymbol.getType();
+                    Symbol classSymbol = tacGenerator.getSymbol(className);
+
+                    if (classSymbol != null && isMethod(classSymbol, memberName)) {
+                        // Es método - NO generar código, solo comentar
+                        instructions.add(MIPSInstruction.comment("Method reference: " + dest + " = " + src + " (resolved on call)"));
+                        return; // ← SALIR AQUÍ, no entrar al switch
+                    }
+                }
+            }
+        }
+
+        // Continuar con el procesamiento normal
         switch (opType) {
             case ASSIGN:
-                // Detectar si es property access o property set
                 String dest = tac.getResult();
                 String src = tac.getArg1();
 
@@ -398,7 +425,7 @@ public class MIPSGenerator {
                     // Property set: obj.prop = value
                     generatePropertySet(tac);
                 } else if (src != null && src.contains(".")) {
-                    // Property get: var = obj.prop
+                    // Property get normal (no-método)
                     generatePropertyGet(tac);
                 } else {
                     generateAssignment(tac);
@@ -485,33 +512,38 @@ public class MIPSGenerator {
 
     private void generatePropertyGet(TACInstruction tac) {
         String dest = tac.getResult();
-        String propertyAccess = tac.getArg1(); // "p.edad"
+        String propertyAccess = tac.getArg1(); // "myDog.speak"
 
         int dotIndex = propertyAccess.indexOf('.');
         String objName = propertyAccess.substring(0, dotIndex);
         String propName = propertyAccess.substring(dotIndex + 1);
 
+        // ✅ CORRECCIÓN: getObjectSymbol YA retorna el Symbol de la CLASE
+        Symbol classSymbol = getObjectSymbol(objName);
+
+        if (classSymbol != null && isMethod(classSymbol, propName)) {
+            // Es método, NO generar lw
+            instructions.add(MIPSInstruction.comment("Method reference: " + dest + " = " + propertyAccess + " (resolved later)"));
+            return; // ← SALIR AQUÍ
+        }
+
+        // Es propiedad normal - continuar con lw
         instructions.add(MIPSInstruction.comment("Property get: " + dest + " = " + propertyAccess));
 
-        // Obtener registro del objeto
         String objReg;
         if (objName.equals("this")) {
             objReg = "$a0";
         } else {
-            // CRÍTICO: Usar el registro correcto del allocator
             objReg = allocator.getReg(objName);
         }
 
-        // Obtener offset de la propiedad
-        Symbol objSymbol = getObjectSymbol(objName);
-        if (objSymbol == null) {
+        if (classSymbol == null) {
             instructions.add(MIPSInstruction.comment("ERROR: Object symbol not found: " + objName));
             return;
         }
 
-        int propOffset = getPropertyOffsetWithInheritance(objSymbol, propName);
+        int propOffset = getPropertyOffsetWithInheritance(classSymbol, propName);
 
-        // Cargar propiedad
         String destReg = allocator.getReg(dest);
         instructions.add(MIPSInstruction.loadStore(
                 OpCode.LW,
@@ -520,6 +552,34 @@ public class MIPSGenerator {
         ));
 
         allocator.markDirty(destReg);
+    }
+
+    /**
+     * Verifica si un nombre es un método en la clase o superclases
+     */
+    private boolean isMethod(Symbol classSymbol, String memberName) {
+        if (classSymbol == null || memberName == null) {
+            return false;
+        }
+
+        // Buscar en los miembros de esta clase
+        if (classSymbol.getMembers() != null) {
+            for (Symbol member : classSymbol.getMembers().values()) {
+                if (member.getName().equals(memberName)) {
+                    return member.getKind() == Symbol.Kind.FUNCTION;
+                }
+            }
+        }
+
+        // Buscar recursivamente en la superclase
+        if (classSymbol.getSuperClass() != null) {
+            Symbol superClassSymbol = tacGenerator.getSymbol(classSymbol.getSuperClass());
+            if (superClassSymbol != null) {
+                return isMethod(superClassSymbol, memberName);
+            }
+        }
+
+        return false;
     }
 
     private void generatePropertySet(TACInstruction tac) {
@@ -871,6 +931,11 @@ public class MIPSGenerator {
         String arg1 = tac.getArg1();
         String arg2 = tac.getArg2();
 
+        System.out.println("╔════════════════════════════════════╗");
+        System.out.println("║ BINARY OP: " + arg1 + " " + op + " " + arg2);
+        System.out.println("║ isStringOp: " + isStringOperation(arg1, arg2));
+        System.out.println("╚════════════════════════════════════╝");
+
         System.out.println(arg1 + " " + op + " " + arg2);
 
         // CASO 1: Operadores de comparación/relacionales
@@ -924,7 +989,6 @@ public class MIPSGenerator {
         Symbol sym1 = tacGenerator.getSymbol(arg1);
         Symbol sym2 = tacGenerator.getSymbol(arg2);
 
-        //  VERIFICAR TIPO EXPLÍCITO (no rastrear temporales)
         if (sym1 != null && sym1.getType() != null && sym1.getType().equals("string")) {
             return true;
         }
@@ -932,9 +996,75 @@ public class MIPSGenerator {
             return true;
         }
 
-        //  NUEVO: Solo rastrear temporales si tienen asignación DIRECTA de string
+        // ✅ NUEVO CASO 3: Rastrear temporales que vienen de property access a strings
+        if (isTemporalWithStringPropertyAccess(arg1) || isTemporalWithStringPropertyAccess(arg2)) {
+            return true;
+        }
+
+        // Caso 4: Temporal con asignación directa de string
         if (isTemporalWithDirectStringAssignment(arg1) || isTemporalWithDirectStringAssignment(arg2)) {
             return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * ✅ NUEVO: Verifica si un temporal viene de un property access a string
+     * Ejemplo: t1 = this.name, donde name es string
+     */
+    private boolean isTemporalWithStringPropertyAccess(String temporal) {
+        if (temporal == null || !temporal.matches("^t\\d+$")) {
+            return false;
+        }
+
+        // Buscar la asignación de este temporal
+        for (int i = tacGenerator.getInstructions().size() - 1; i >= 0; i--) {
+            TACInstruction tac = tacGenerator.getInstructions().get(i);
+
+            if (tac.getOp() == TACInstruction.OpType.ASSIGN &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(temporal)) {
+
+                String source = tac.getArg1();
+
+                // Verificar si es property access (obj.prop o this.prop)
+                if (source != null && source.contains(".")) {
+                    int dotIndex = source.indexOf('.');
+                    String objName = source.substring(0, dotIndex);
+                    String propName = source.substring(dotIndex + 1);
+
+                    // Obtener tipo de la propiedad
+                    if (objName.equals("this")) {
+                        // Buscar en la clase actual
+                        if (currentFunction != null) {
+                            Symbol funcSym = tacGenerator.getSymbol(currentFunction);
+                            if (funcSym != null && funcSym.getEnclosingClassName() != null) {
+                                String className = funcSym.getEnclosingClassName();
+                                Symbol classSym = tacGenerator.getSymbol(className);
+
+                                if (classSym != null && classSym.getMembers() != null) {
+                                    Symbol propSym = classSym.getMembers().get(propName);
+                                    if (propSym != null && propSym.getType() != null) {
+                                        return propSym.getType().equals("string");
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Objeto normal
+                        Symbol classSymbol = getObjectSymbol(objName);
+                        if (classSymbol != null && classSymbol.getMembers() != null) {
+                            Symbol propSym = classSymbol.getMembers().get(propName);
+                            if (propSym != null && propSym.getType() != null) {
+                                return propSym.getType().equals("string");
+                            }
+                        }
+                    }
+                }
+
+                break;
+            }
         }
 
         return false;
@@ -1136,12 +1266,22 @@ public class MIPSGenerator {
     }
     /**
      * Verifica si un temporal contiene un string
-     * Busca en las instrucciones TAC previas para ver si fue asignado desde un string
+     * VERSIÓN CORREGIDA: Evita recursión infinita con Set de visitados
      */
     private boolean temporalContainsString(String temporal) {
+        return temporalContainsStringHelper(temporal, new HashSet<>());
+    }
+
+    private boolean temporalContainsStringHelper(String temporal, Set<String> visited) {
         if (temporal == null || !temporal.matches("^t\\d+$")) {
             return false;
         }
+
+        // ✅ CRÍTICO: Evitar ciclos infinitos
+        if (visited.contains(temporal)) {
+            return false;
+        }
+        visited.add(temporal);
 
         // Buscar en las instrucciones TAC la asignación de este temporal
         for (TACInstruction tac : tacGenerator.getInstructions()) {
@@ -1162,9 +1302,9 @@ public class MIPSGenerator {
                     return true;
                 }
 
-                // Si se asignó desde otro temporal que es string (recursivo)
+                // Si se asignó desde otro temporal que es string (recursivo CON visited)
                 if (source != null && source.matches("^t\\d+$")) {
-                    return temporalContainsString(source);
+                    return temporalContainsStringHelper(source, visited);
                 }
             }
 
@@ -1179,7 +1319,9 @@ public class MIPSGenerator {
                     return true;
                 }
 
-                if (temporalContainsString(tac.getArg1()) || temporalContainsString(tac.getArg2())) {
+                // Recursión con visited
+                if (temporalContainsStringHelper(tac.getArg1(), visited) ||
+                        temporalContainsStringHelper(tac.getArg2(), visited)) {
                     return true;
                 }
             }
@@ -1193,9 +1335,19 @@ public class MIPSGenerator {
      * Busca en las instrucciones TAC previas para ver si fue asignado desde un string
      */
     private boolean temporalContainsInt(String temporal) {
+        return temporalContainsIntHelper(temporal, new HashSet<>());
+    }
+
+    private boolean temporalContainsIntHelper(String temporal, Set<String> visited) {
         if (temporal == null || !temporal.matches("^t\\d+$")) {
             return false;
         }
+
+        // ✅ Evitar ciclos
+        if (visited.contains(temporal)) {
+            return false;
+        }
+        visited.add(temporal);
 
         // Buscar en las instrucciones TAC la asignación de este temporal
         for (TACInstruction tac : tacGenerator.getInstructions()) {
@@ -1205,49 +1357,41 @@ public class MIPSGenerator {
 
                 String source = tac.getArg1();
 
-                // Si se asignó desde un número literal
                 if (isImmediate(source)) {
                     return true;
                 }
 
-                // Si se asignó desde una variable integer
                 Symbol sym = tacGenerator.getSymbol(source);
                 if (sym != null && sym.getType() != null && sym.getType().equals("integer")) {
                     return true;
                 }
 
-                // Si se asignó desde otro temporal que es int (recursivo)
                 if (source != null && source.matches("^t\\d+$")) {
-                    return temporalContainsInt(source);
+                    return temporalContainsIntHelper(source, visited);
                 }
             }
 
-            // Si fue resultado de una operación aritmética
             if (tac.getOp() == TACInstruction.OpType.BINARY_OP &&
                     tac.getResult() != null &&
                     tac.getResult().equals(temporal)) {
 
                 String operator = tac.getOperator();
 
-                // Operadores aritméticos producen integers
                 if (operator.equals("+") || operator.equals("-") ||
                         operator.equals("*") || operator.equals("/") ||
                         operator.equals("%")) {
 
-                    // Verificar que no sea concatenación de strings
-                    // (+ puede ser tanto aritmético como concatenación)
                     if (operator.equals("+")) {
-                        // Si alguno es string, es concatenación, no aritmética
                         if (isStringLiteral(tac.getArg1()) || isStringLiteral(tac.getArg2()) ||
-                                temporalContainsString(tac.getArg1()) || temporalContainsString(tac.getArg2())) {
-                            return false; // Es concatenación, no produce int
+                                temporalContainsStringHelper(tac.getArg1(), new HashSet<>()) ||
+                                temporalContainsStringHelper(tac.getArg2(), new HashSet<>())) {
+                            return false;
                         }
                     }
 
-                    return true; // Es operación aritmética
+                    return true;
                 }
 
-                // Operadores de comparación también producen integers (0 o 1)
                 if (operator.equals("<") || operator.equals("<=") ||
                         operator.equals(">") || operator.equals(">=") ||
                         operator.equals("==") || operator.equals("!=")) {
@@ -1255,20 +1399,13 @@ public class MIPSGenerator {
                 }
             }
 
-            // Si fue resultado de una operación unaria
             if (tac.getOp() == TACInstruction.OpType.UNARY_OP &&
                     tac.getResult() != null &&
                     tac.getResult().equals(temporal)) {
 
                 String operator = tac.getOperator();
 
-                // Negación aritmética produce integer
-                if (operator.equals("-")) {
-                    return true;
-                }
-
-                // Negación lógica produce boolean (que es integer en MIPS)
-                if (operator.equals("!")) {
+                if (operator.equals("-") || operator.equals("!")) {
                     return true;
                 }
             }
@@ -1277,6 +1414,59 @@ public class MIPSGenerator {
         return false;
     }
 
+    /**
+     * Resuelve una llamada indirecta a método (cuando el TAC es "call t1()")
+     * Busca en TAC previo si t1 fue asignado como "obj.method"
+     * Retorna [objName, methodName, className] o null
+     */
+    private String[] resolveIndirectMethodCall(String tempVar) {
+
+        if (tempVar == null || !tempVar.matches("^t\\d+$")) {
+            return null;
+        }
+
+        List<TACInstruction> instructions = tacGenerator.getInstructions();
+
+        // Buscar hacia atrás la asignación: t1 = myDog.speak
+        for (int i = instructions.size() - 1; i >= 0; i--) {
+            TACInstruction tac = instructions.get(i);
+
+            if (tac.getOp() == TACInstruction.OpType.ASSIGN &&
+                    tac.getResult() != null &&
+                    tac.getResult().equals(tempVar)) {
+
+                String source = tac.getArg1();
+
+                if (source != null && source.contains(".")) {
+                    int dotIndex = source.indexOf('.');
+                    String objName = source.substring(0, dotIndex);
+                    String methodName = source.substring(dotIndex + 1);
+
+                    Symbol objSymbol = getObjectSymbol(objName);
+                    if (objSymbol == null) {
+                        return null;
+                    }
+
+                    String className = objSymbol.getName();  // ← Usar getName() porque ya es el Symbol de la clase
+                    if (className == null) {
+                        return null;
+                    }
+
+                    // Buscar clase real del método (puede estar en superclase)
+                    String actualClassName = findClassWithMethod(className, methodName);
+                    if (actualClassName == null) {
+                        actualClassName = className;
+                    }
+
+                    return new String[]{objName, methodName, actualClassName};
+                }
+
+                break;
+            }
+        }
+
+        return null;
+    }
     /**
      * Verifica si un valor es un string literal
      */
@@ -1536,12 +1726,47 @@ public class MIPSGenerator {
 
     /**
      * Genera llamada a función con asignación
+     * CORREGIDO: Detecta llamadas indirectas a métodos
      */
     private void generateAssignCall(TACInstruction tac) {
         String result = tac.getResult();
         String functionName = tac.getArg1();
         List<String> params = tac.getParams();
 
+        // ✅ Detectar si es llamada indirecta a método heredado
+        String[] methodInfo = resolveIndirectMethodCall(functionName);
+
+        if (methodInfo != null) {
+            String objName = methodInfo[0];
+            String methodName = methodInfo[1];
+            String className = methodInfo[2];
+
+            instructions.add(MIPSInstruction.comment("Indirect method call: " + result + " = " + objName + "." + methodName + "()"));
+
+            // Obtener registro del objeto
+            String objReg = allocator.getReg(objName);
+            instructions.add(MIPSInstruction.move("$a0", objReg));
+
+            // Parámetros adicionales
+            Register[] argRegs = {Register.A1, Register.A2, Register.A3};
+            for (int i = 0; i < params.size() && i < 3; i++) {
+                String paramReg = allocator.getReg(params.get(i));
+                instructions.add(MIPSInstruction.move(argRegs[i].getName(), paramReg));
+            }
+
+            // Llamar: ClassName_methodName
+            allocator.saveTemporaries();
+            instructions.add(MIPSInstruction.jump(OpCode.JAL, className + "_" + methodName));
+
+            // Capturar retorno
+            String resultReg = allocator.getReg(result);
+            instructions.add(MIPSInstruction.move(resultReg, "$v0"));
+            allocator.markDirty(resultReg);
+
+            return;  // ← MUY IMPORTANTE
+        }
+
+        // Caso normal (función directa)
         generateParameters(params);
         allocator.saveTemporaries();
         instructions.add(MIPSInstruction.jump(OpCode.JAL, functionName));
@@ -1550,7 +1775,6 @@ public class MIPSGenerator {
         instructions.add(MIPSInstruction.move(resultReg, Register.V0.getName()));
         allocator.markDirty(resultReg);
     }
-
     /**
      * Genera parámetros usando objetos Register
      */
@@ -2025,7 +2249,6 @@ public class MIPSGenerator {
      */
     private Symbol getObjectSymbol(String objName) {
         if (objName.equals("this")) {
-            // 'this' refiere al objeto actual, necesitamos la clase actual
             if (currentFunction != null) {
                 Symbol funcSym = tacGenerator.getSymbol(currentFunction);
                 if (funcSym != null && funcSym.getEnclosingClassName() != null) {
@@ -2038,11 +2261,20 @@ public class MIPSGenerator {
 
         // Caso 2: es variable declarada (busca símbolo)
         Symbol varSym = tacGenerator.getSymbol(objName);
+
+        // ✅ DEBUG: Imprimir tipo de la variable
         if (varSym != null) {
-            return tacGenerator.getSymbol(varSym.getType());
+
+            String typeName = varSym.getType();
+            if (typeName != null) {
+                Symbol classSymbol = tacGenerator.getSymbol(typeName);
+                return classSymbol;
+            } else {
+            }
+        } else {
         }
 
-        // Caso 3: es un temporal -> debes tener un mapa tempTypeMap
+        // Caso 3: es un temporal
         if (tempTypeMap.containsKey(objName)) {
             return tacGenerator.getSymbol(tempTypeMap.get(objName));
         }
