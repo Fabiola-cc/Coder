@@ -1635,6 +1635,11 @@ public class MIPSGenerator {
                 return;
             }
 
+            if (value != null) {
+                printArgument(value, contextLine);
+                return;
+            }
+
             // Obtener el registro donde está el temporal
             String argReg = allocator.getReg(arg);
 
@@ -1653,6 +1658,7 @@ public class MIPSGenerator {
                 allocator.saveTemporaries();
                 instructions.add(MIPSInstruction.jump(OpCode.JAL, "print"));
             }
+
             return;
         }
 
