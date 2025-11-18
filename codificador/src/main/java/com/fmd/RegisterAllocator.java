@@ -514,9 +514,7 @@ public class RegisterAllocator {
         }
     }
 
-    // ============================================
     // UTILIDADES
-    // ============================================
     /**
      * Avanza el contador de línea (para algoritmo de próximo uso)
      */
@@ -568,5 +566,23 @@ public class RegisterAllocator {
 
     public void setLoadObject(Boolean loadObject) {
         this.loadObject = loadObject;
+    }
+
+    public void ensureBinding(String variable, String register) {
+        if (variableToRegister.containsKey(variable) &&
+                variableToRegister.get(variable).equals(register)) {
+            return;
+        }
+
+        // Actualizar mapping
+        variableToRegister.put(variable, register);
+
+        // Actualizar descriptor del registro
+        RegisterDescriptor desc = registerState.get(register);
+        if (desc != null && !variable.equals(desc.getVariable())) {
+            desc.assign(variable);
+        }
+
+        lastUse.put(variable, currentLine);
     }
 }

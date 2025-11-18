@@ -173,7 +173,7 @@ public class MIPSGenerator {
 
                     data.append(sym.getName()).append(": ");
                     data.append(".space ").append(size * 4);
-                    data.append("  # Array de ").append(size).append(" elementos\n");
+                    data.append("\n");
                 }
             }
         }
@@ -276,26 +276,43 @@ public class MIPSGenerator {
     /**
      * Obtiene el tamaño total de un array desde Symbol
      */
+    /**
+     * Obtiene el tamaño total de un array desde Symbol
+     * Maneja arrays 1D y 2D correctamente
+     */
     private int getArraySize(Symbol sym) {
-        // Calcular desde el size del símbolo
         int totalSize = sym.getSize();
 
-        // Si es integer[], cada elemento es 4 bytes
-        // Si es integer[][], depende de las dimensiones
-        String baseType = sym.getType().replace("[]", "");
-        int elementSize = 4; // Por defecto
+        // Determinar tipo base y número de dimensiones
+        String type = sym.getType();
+        int dimensions = 0;
+        String baseType = type;
 
-        if (baseType.equals("integer")) {
-            elementSize = 4;
-        } else if (baseType.equals("string")) {
-            elementSize = 8;
-        } else if (baseType.equals("boolean")) {
-            elementSize = 1;
+        // Contar dimensiones ([])
+        while (baseType.endsWith("[]")) {
+            dimensions++;
+            baseType = baseType.substring(0, baseType.length() - 2);
+        }
+
+        // Tamaño por elemento según tipo base
+        int elementSize = 4; // Por defecto (integer)
+        switch (baseType.toLowerCase()) {
+            case "integer":
+                elementSize = 4;
+                break;
+            case "string":
+                elementSize = 8;
+                break;
+            case "boolean":
+                elementSize = 1;
+                break;
         }
 
         // Calcular número de elementos
         int elements = totalSize / elementSize;
-        if (elements == 0) elements = 10; // Default si no se puede calcular
+        if (elements == 0) {
+            elements = 10; // Default fallback
+        }
 
         return elements;
     }
@@ -667,6 +684,8 @@ public class MIPSGenerator {
      * dest: nombre de la variable destino (puede ser temporal)
      */
     private void generateArrayLoad(String dest, String arrayAccess) {
+
+
         int openBracket = arrayAccess.indexOf('[');
         int closeBracket = arrayAccess.indexOf(']');
 
@@ -762,11 +781,10 @@ public class MIPSGenerator {
                 "0(" + addrReg + ")"
         ));
 
-        // Liberar registros temporales
-        allocator.freeRegister(indexReg);
         allocator.freeRegister(addrReg);
         allocator.freeRegister(baseReg);
 
+        allocator.ensureBinding(dest, destReg);
         allocator.markDirty(destReg);
     }
 
@@ -775,6 +793,12 @@ public class MIPSGenerator {
      * Almacena en array: arr[idx] = src
      */
     private void generateArrayStore(String arrayAccess, String src) {
+
+        if (arrayAccess.contains("][")) {
+            generateArray2DStore(arrayAccess, src);
+            return;
+        }
+
         int openBracket = arrayAccess.indexOf('[');
         int closeBracket = arrayAccess.indexOf(']');
 
@@ -882,6 +906,199 @@ public class MIPSGenerator {
         if (isImmediate(src)) {
             allocator.freeRegister(srcReg);
         }
+    }
+
+    /**
+     * Obtiene el número de columnas de un array 2D escaneando el TAC
+     * Busca todos los accesos a matrix[i][j] y determina el máximo j
+     */
+    private int getArray2DColumns(Symbol arraySym) {
+        String arrayName = arraySym.getName();
+        int maxCol = 0;
+        int maxRow = 0;
+
+        List<TACInstruction> instructions = tacGenerator.getInstructions();
+
+        for (TACInstruction tac : instructions) {
+            // Buscar en result (para stores: matrix[i][j] = value)
+            if (tac.getResult() != null && tac.getResult().contains(arrayName + "[")) {
+                int[] dims = extract2DIndices(tac.getResult(), arrayName);
+                if (dims != null) {
+                    maxRow = Math.max(maxRow, dims[0]);
+                    maxCol = Math.max(maxCol, dims[1]);
+                }
+            }
+
+            // Buscar en arg1 (para loads: var = matrix[i][j])
+            if (tac.getArg1() != null && tac.getArg1().contains(arrayName + "[")) {
+                int[] dims = extract2DIndices(tac.getArg1(), arrayName);
+                if (dims != null) {
+                    maxRow = Math.max(maxRow, dims[0]);
+                    maxCol = Math.max(maxCol, dims[1]);
+                }
+            }
+        }
+
+        // Número de columnas = maxCol + 1 (porque indices empiezan en 0)
+        int cols = maxCol + 1;
+
+        // Fallback si no encontramos accesos
+        if (cols == 0) {
+            System.err.println("WARNING: No se pudieron inferir dimensiones de " + arrayName + ", usando 2 por defecto");
+            return 2;
+        }
+
+        return cols;
+    }
+
+    /**
+     * Extrae los índices [i][j] de un string como "matrix[0][1]"
+     * @return int[] {row, col} o null si no es un acceso 2D válido
+     */
+    private int[] extract2DIndices(String arrayAccess, String arrayName) {
+        if (!arrayAccess.startsWith(arrayName + "[")) {
+            return null;
+        }
+
+        // Parsear: matrix[0][1]
+        int firstOpen = arrayAccess.indexOf('[');
+        int firstClose = arrayAccess.indexOf(']');
+        int secondOpen = arrayAccess.indexOf('[', firstClose);
+        int secondClose = arrayAccess.indexOf(']', secondOpen);
+
+        if (firstOpen < 0 || secondOpen < 0) {
+            return null; // No es 2D
+        }
+
+        try {
+            String rowStr = arrayAccess.substring(firstOpen + 1, firstClose).trim();
+            String colStr = arrayAccess.substring(secondOpen + 1, secondClose).trim();
+
+            // Solo procesar si ambos son constantes
+            if (!isImmediate(rowStr) || !isImmediate(colStr)) {
+                return null; // Índices variables, no podemos inferir
+            }
+
+            int row = Integer.parseInt(rowStr);
+            int col = Integer.parseInt(colStr);
+
+            return new int[]{row, col};
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Maneja store en array 2D: matrix[i][j] = value
+     */
+    private void generateArray2DStore(String arrayAccess, String src) {
+        // Parsear: matrix[0][1]
+        int firstOpen = arrayAccess.indexOf('[');
+        int firstClose = arrayAccess.indexOf(']');
+        int secondOpen = arrayAccess.indexOf('[', firstClose);
+        int secondClose = arrayAccess.indexOf(']', secondOpen);
+
+        String arrayName = arrayAccess.substring(0, firstOpen).trim();
+        String row = arrayAccess.substring(firstOpen + 1, firstClose).trim();
+        String col = arrayAccess.substring(secondOpen + 1, secondClose).trim();
+
+        Symbol arraySym = tacGenerator.getSymbol(arrayName);
+
+        // Obtener dimensiones del array
+        int cols = getArray2DColumns(arraySym);  // Necesitas obtener número de columnas
+
+        // Cargar valor
+        String srcReg;
+        if (isImmediate(src)) {
+            srcReg = "$t0";
+            instructions.add(MIPSInstruction.li(srcReg, Integer.parseInt(src)));
+        } else {
+            srcReg = allocator.getReg(src);
+        }
+
+        // CASO 1: Ambos índices son constantes
+        if (isImmediate(row) && isImmediate(col)) {
+            int rowIdx = Integer.parseInt(row);
+            int colIdx = Integer.parseInt(col);
+            int offset = (rowIdx * cols + colIdx) * 4;
+
+            if (arraySym.isLocal()) {
+                int totalOffset = arraySym.getOffset() + offset;
+                instructions.add(MIPSInstruction.loadStore(
+                        MIPSInstruction.OpCode.SW,
+                        srcReg,
+                        totalOffset + "($fp)"
+                ));
+            } else {
+                instructions.add(MIPSInstruction.loadStore(
+                        MIPSInstruction.OpCode.SW,
+                        srcReg,
+                        arrayName + "+" + offset
+                ));
+            }
+            return;
+        }
+
+        // CASO 2: Índices variables
+        // offset = (row * cols + col) * 4
+        String rowReg = allocator.getReg(row);
+        String colReg = allocator.getReg(col);
+
+        String tempReg = "$t8";
+        String baseReg = "$t9";
+
+        // temp = row * cols
+        instructions.add(MIPSInstruction.li(tempReg, cols));
+        instructions.add(MIPSInstruction.typeR(
+                MIPSInstruction.OpCode.MUL,
+                tempReg,
+                rowReg,
+                tempReg
+        ));
+
+        // temp = temp + col
+        instructions.add(MIPSInstruction.typeR(
+                MIPSInstruction.OpCode.ADD,
+                tempReg,
+                tempReg,
+                colReg
+        ));
+
+        // temp = temp * 4 (shift left 2)
+        instructions.add(MIPSInstruction.typeR(
+                MIPSInstruction.OpCode.SLL,
+                tempReg,
+                tempReg,
+                "2"
+        ));
+
+        // Cargar base del array
+        if (arraySym.isLocal()) {
+            int baseOffset = arraySym.getOffset();
+            instructions.add(MIPSInstruction.typeI(
+                    MIPSInstruction.OpCode.ADDI,
+                    baseReg,
+                    "$fp",
+                    baseOffset
+            ));
+        } else {
+            instructions.add(MIPSInstruction.la(baseReg, arrayName));
+        }
+
+        // Dirección efectiva
+        instructions.add(MIPSInstruction.typeR(
+                MIPSInstruction.OpCode.ADD,
+                tempReg,
+                baseReg,
+                tempReg
+        ));
+
+        // Guardar valor
+        instructions.add(MIPSInstruction.loadStore(
+                MIPSInstruction.OpCode.SW,
+                srcReg,
+                "0(" + tempReg + ")"
+        ));
     }
 
     /**
@@ -1048,13 +1265,7 @@ public class MIPSGenerator {
         printArgument(param, currentLine);
     }
 
-    /**
-     * Imprime un argumento (puede ser string o int)
-     */
-    /**
-     * Imprime un argumento (puede ser string o int)
-     * CORREGIDO: Carga valores directamente sin depender del allocator
-     */
+
     /**
      * Imprime un argumento (puede ser string o int)
      * @param arg El argumento a imprimir
@@ -1128,10 +1339,25 @@ public class MIPSGenerator {
                 return;
             }
 
-            if (value != null) {
-                printArgument(value, contextLine);
-                return;
+            // Obtener el registro donde está el temporal
+            String argReg = allocator.getReg(arg);
+
+            // Determinar el tipo para saber qué syscall usar
+            if (temporalContainsInt(arg)) {
+                instructions.add(MIPSInstruction.move("$a0", argReg));
+                instructions.add(MIPSInstruction.li("$v0", 1));
+                instructions.add(MIPSInstruction.syscall());
+            } else if (isTemporalWithDirectStringAssignment(arg)) {
+                instructions.add(MIPSInstruction.move("$a0", argReg));
+                instructions.add(MIPSInstruction.li("$v0", 4));
+                instructions.add(MIPSInstruction.syscall());
+            } else {
+                // Fallback genérico
+                instructions.add(MIPSInstruction.move("$a0", argReg));
+                allocator.saveTemporaries();
+                instructions.add(MIPSInstruction.jump(OpCode.JAL, "print"));
             }
+            return;
         }
 
         // Caso 5: Fallback

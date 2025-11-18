@@ -5,9 +5,10 @@ true_str: .asciiz "true"
 false_str: .asciiz "false"
 concat_buffer: .space 512
 int_buffer: .space 32
-str_0: .asciiz "\n"
 .align 2
-arr: .space 16  # Array de 4 elementos
+numbers: .space 24
+.align 2
+matrix: .space 20
 
 
 .text
@@ -15,54 +16,41 @@ arr: .space 16  # Array de 4 elementos
 main:
     move    $fp, $sp
 
-    li      $t0, 10
-    # Array store: arr[0] = t1
-    sw      $t0, arr+0
-    li      $t0, 20
-    # Array store: arr[1] = t1
-    sw      $t0, arr+4
-    li      $t0, 30
-    # Array store: arr[2] = t1
-    sw      $t0, arr+8
     li      $t0, 1
-    # Array load: t2 = arr[t1]
+    # Array store: numbers[0] = t1
+    sw      $t0, numbers+0
+    li      $t0, 2
+    # Array store: numbers[1] = t1
+    sw      $t0, numbers+4
+    li      $t0, 3
+    # Array store: numbers[2] = t1
+    sw      $t0, numbers+8
+    li      $t0, 4
+    # Array store: numbers[3] = t1
+    sw      $t0, numbers+12
+    li      $t0, 5
+    # Array store: numbers[4] = t1
+    sw      $t0, numbers+16
+    li      $t0, 1
+    sw      $t0, matrix+0
+    li      $t0, 2
+    sw      $t0, matrix+4
+    li      $t0, 3
+    sw      $t0, matrix+8
+    li      $t0, 4
+    sw      $t0, matrix+12
+    li      $t0, 1
+    # Array load: t2 = matrix[t1]
     sll     $t2, $t0, 2
-    la      $t3, arr
+    la      $t3, matrix
     add     $t2, $t3, $t2
     lw      $t1, 0($t2)
-    move    $a0, $t0
-    jal     print
-    la      $t1, str_0
-    la      $a0, str_0
-    li      $v0, 4
-    syscall 
-    li      $t1, 2
-    move    $t0, $t1
-    # Array load: t2 = arr[i]
-    sll     $t2, $t0, 2
-    la      $t3, arr
-    add     $t2, $t3, $t2
-    lw      $t1, 0($t2)
-    move    $a0, $t0
-    jal     print
-    la      $t1, str_0
-    la      $a0, str_0
-    li      $v0, 4
-    syscall 
-    li      $t1, 99
-    # Array store: arr[0] = t2
-    sw      $t1, arr+0
-    li      $t1, 0
-    # Array load: t1 = arr[t2]
-    sll     $t2, $t1, 2
-    la      $t3, arr
-    add     $t2, $t3, $t2
-    lw      $t0, 0($t2)
-    move    $a0, $t1
-    jal     print
-    la      $t1, str_0
-    la      $a0, str_0
-    li      $v0, 4
+    li      $t0, 1
+    # ERROR: Array t2 not found
+    move    $t5, $t4
+    move    $t4, $t5
+    move    $a0, $t4
+    li      $v0, 1
     syscall 
 
     # Fin del programa
