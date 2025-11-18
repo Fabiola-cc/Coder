@@ -1,16 +1,39 @@
-class Persona {
-    let nombre: string;
-    let edad: integer;
+// Clase base
+class Animal {
+  let name: string;
+  let age: integer;
 
-    function constructor(nombre: string, edad: integer) {
-        this.nombre = nombre;
-        this.edad = edad;
-    }
+  function constructor(name: string, age: integer) {
+    this.name = name;
+    this.age = age;
+  }
 
-    function saludar(): string {
-        return "Hola " + this.nombre;
-    }
+  function speak(): string {
+    return this.name + " makes a sound";
+  }
 }
 
-let p: Persona = new Persona("Juan", 25);
-print(p.edad);
+// Subclase - NO redeclara name/age
+class Dog : Animal {
+  let breed: string;
+  let name:string;
+  let age:integer;
+
+  function constructor(name: string, age: integer, breed: string) {
+    this.name = name;
+    this.age = age;
+    this.breed = breed;
+  }
+
+  function bark(): string {
+    return this.name + " says Woof!";
+  }
+}
+
+// Prueba
+let myDog: Dog;
+myDog = new Dog("Max", 3, "Golden");
+
+//print(myDog.bark());      // Método propio
+//print(myDog.speak());     // Método heredado
+print(myDog.name);        // Propiedad heredada accesible
