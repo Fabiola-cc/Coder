@@ -122,6 +122,52 @@ public class RegisterAllocator {
         return victim;
     }
 
+    public String getRegAssign(String variable, String tempToAssign) {
+        // PASO 1: Si ya tiene registro asignado, reutilizarlo
+        if (variableToRegister.containsKey(tempToAssign)) {
+            String reg = variableToRegister.get(tempToAssign);
+            // Reemplazar uso de registro
+            variableToRegister.put(variable, reg);
+            variableToRegister.remove(tempToAssign);
+            lastUse.put(variable, currentLine); // actualizar uso
+            return reg;
+        }
+
+        if (variableToRegister.containsKey(variable)) {
+            String reg = variableToRegister.get(variable);
+            lastUse.put(variable, currentLine); // actualizar uso
+            return reg;
+        }
+
+        // PASO 2: Si hay registros libres, tomar uno
+        // 1) ¿Es un objeto? -> ponerlo en un $sX
+        if (loadObject) {
+            for (int i = 1; i < SAVED_REGISTERS.length; i++) { // $s1..$s7
+                String reg = "$s" + i;
+                RegisterDescriptor desc = registerState.get(reg);
+                if (desc.getVariable() == null) {
+                    assignRegister(variable, reg);
+                    return reg;
+                }
+            }
+            // si no hay espacio, entonces fallback a spill
+        }
+
+        // 2) Si NO es objeto → usar temporales $t0–$t7
+        if (!freeRegisters.isEmpty()) {
+            String reg = freeRegisters.pop();
+            assignRegister(variable, reg);
+            return reg;
+        }
+
+        // PASO 3: ALGORITMO DE DESALOJO (spilling)
+        // No hay registros libres, hay que desalojar uno
+        String victim = selectVictim();
+        spillRegister(victim);
+        assignRegister(variable, victim);
+        return victim;
+    }
+
     // ============================================
     // ASIGNACIÓN Y LIBERACIÓN
     // ============================================
