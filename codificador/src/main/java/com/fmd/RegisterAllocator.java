@@ -15,9 +15,9 @@ import java.util.*;
  */
 public class RegisterAllocator {
 
-    // ============================================
+    
     // REGISTROS DISPONIBLES
-    // ============================================
+    
     private static final String[] TEMP_REGISTERS = {
             "$t0", "$t1", "$t2", "$t3", "$t4", "$t5", "$t6", "$t7"
     };
@@ -26,9 +26,9 @@ public class RegisterAllocator {
             "$s0", "$s1", "$s2", "$s3", "$s4", "$s5", "$s6", "$s7"
     };
 
-    // ============================================
+    
     // ESTADO DEL ALLOCATOR
-    // ============================================
+    
     private Map<String, RegisterDescriptor> registerState;      // registro -> descriptor
     private Map<String, String> variableToRegister;             // variable -> registro actual
     private Stack<String> freeRegisters;                        // registros disponibles
@@ -50,9 +50,9 @@ public class RegisterAllocator {
     private Boolean loadObject;
     private Boolean multipleRecursive;
 
-    // ============================================
+    
     // CONSTRUCTOR
-    // ============================================
+    
     public RegisterAllocator(TACGenerator tacGenerator) {
         this.tacGenerator = tacGenerator;
         this.registerState = new HashMap<>();
@@ -79,9 +79,9 @@ public class RegisterAllocator {
         }
     }
 
-    // ============================================
+    
     // MÉTODO PRINCIPAL: getReg()
-    // ============================================
+    
     /**
      * ALGORITMO getReg() - NÚCLEO DEL PROYECTO
      * Asigna un registro para una variable/temporal según el algoritmo del Dragon Book
@@ -175,9 +175,9 @@ public class RegisterAllocator {
         return victim;
     }
 
-    // ============================================
+    
     // ASIGNACIÓN Y LIBERACIÓN
-    // ============================================
+    
     /**
      * Asigna un registro a una variable
      */
@@ -218,9 +218,9 @@ public class RegisterAllocator {
     }
 
 
-    // ============================================
+    
     // SPILLING (DESALOJO A MEMORIA)
-    // ============================================
+    
     /**
      * Guarda un registro en memoria (stack o frame)
      * Solo guarda si el registro está "dirty" (modificado)
@@ -329,9 +329,9 @@ public class RegisterAllocator {
         return currentLine - last; // distancia desde último uso
     }
 
-    // ============================================
+    
     // ACCESO A MEMORIA (LOAD/STORE)
-    // ============================================
+    
     /**
      * Obtiene el offset en el frame para una variable
      * Usa la tabla de símbolos del TAC que ya tiene los offsets calculados
@@ -468,9 +468,9 @@ public class RegisterAllocator {
     }
 
 
-    // ============================================
+    
     // DIRTY BIT MANAGEMENT
-    // ============================================
+    
     /**
      * Marca un registro como "dirty" (modificado, no sincronizado)
      */
@@ -505,9 +505,9 @@ public class RegisterAllocator {
         }
     }
 
-    // ============================================
+    
     // CONTEXT MANAGEMENT (para llamadas a función)
-    // ============================================
+    
     /**
      * Guarda todos los registros $t antes de una llamada
      */
@@ -551,9 +551,7 @@ public class RegisterAllocator {
         return SAVED_REGISTERS;
     }
 
-    // ============================================
     // UTILIDADES
-    // ============================================
     /**
      * Avanza el contador de línea (para algoritmo de próximo uso)
      */
@@ -611,6 +609,23 @@ public class RegisterAllocator {
         this.loadObject = loadObject;
     }
 
+    public void ensureBinding(String variable, String register) {
+        if (variableToRegister.containsKey(variable) &&
+                variableToRegister.get(variable).equals(register)) {
+            return;
+        }
+
+        // Actualizar mapping
+        variableToRegister.put(variable, register);
+
+        // Actualizar descriptor del registro
+        RegisterDescriptor desc = registerState.get(register);
+        if (desc != null && !variable.equals(desc.getVariable())) {
+            desc.assign(variable);
+        }
+
+        lastUse.put(variable, currentLine);
+      
     public void setmultipleRecursive(Boolean multipleRecursive) {
         this.multipleRecursive = multipleRecursive;
     }

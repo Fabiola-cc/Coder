@@ -1,39 +1,9 @@
-// Clase base
-class Animal {
-  let name: string;
-  let age: integer;
+let numbers: integer[] = [1, 2, 3, 4, 5];
+let matrix: integer[][] = [[1, 2], [3, 4]];
 
-  function constructor(name: string, age: integer) {
-    this.name = name;
-    this.age = age;
-  }
+let num1: integer = numbers[4];
+let num: integer = matrix[1][1];
 
-  function speak(): string {
-    return this.name + " makes a sound";
-  }
-}
-
-// Subclase - NO redeclara name/age
-class Dog : Animal {
-  let breed: string;
-  let name:string;
-  let age:integer;
-
-  function constructor(name: string, age: integer, breed: string) {
-    this.name = name;
-    this.age = age;
-    this.breed = breed;
-  }
-
-  function bark(): string {
-    return this.name + " says Woof!";
-  }
-}
-
-// Prueba
-let myDog: Dog;
-myDog = new Dog("Max", 3, "Golden");
-
-//print(myDog.bark());      // Método propio
-//print(myDog.speak());     // Método heredado
-print(myDog.name);        // Propiedad heredada accesible
+print(num1);
+print("\n");
+print(num);
