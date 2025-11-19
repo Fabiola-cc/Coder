@@ -2342,11 +2342,16 @@ public class MIPSGenerator {
             instructions.add(MIPSInstruction.move(Register.V0.getName(), returnReg));
         }
 
-        if (currentFunction != null) {
-            instructions.add(MIPSInstruction.jump(OpCode.J, currentFunction + "_epilog"));
-        } else {
-            instructions.add(MIPSInstruction.jump(OpCode.J, "epilog"));
+        // CORREGIR: Usar el nombre completo de la función actual (puede ser ClassName_methodName)
+        Symbol funcSym = tacGenerator.getSymbol(currentFunction);
+        String epilogLabel = currentFunction + "_epilog";
+
+        if (funcSym != null && funcSym.getEnclosingClassName() != null) {
+            // Es un metodo - el epilog tiene el prefijo de la clase
+            epilogLabel = funcSym.getEnclosingClassName() + "_" + currentFunction + "_epilog";
         }
+
+        instructions.add(MIPSInstruction.jump(OpCode.J, epilogLabel));
     }
 
     /**
@@ -2435,6 +2440,7 @@ public class MIPSGenerator {
     /**
      * Carga los parámetros desde el stack frame
      * Considera el espacio de registros saved
+     * IMPORTANTE: Si es método, $a0=this está en offset 40, parámetros empiezan en 44
      */
     private void loadFunctionParameters(Symbol funcSym, boolean isMethod, int savedRegsSpace) {
         if (funcSym == null || funcSym.getParams() == null) return;
@@ -2442,12 +2448,21 @@ public class MIPSGenerator {
         List<Symbol> params = funcSym.getParams();
         instructions.add(MIPSInstruction.comment("Loading parameters from frame"));
 
+        // Si es método, $a0 (this) está en 40($fp) pero NO lo cargamos aquí
+        // Los parámetros REALES empiezan desde $a1 (offset 44)
+        int startOffset = 8 + savedRegsSpace; // = 40
+
+        if (isMethod) {
+            // Skip 'this' - los parámetros del usuario empiezan en 44($fp)
+            startOffset += 4;
+            instructions.add(MIPSInstruction.comment("Skipping 'this' at 40($fp)"));
+        }
+
         for (int i = 0; i < params.size(); i++) {
             Symbol param = params.get(i);
             String paramName = param.getName();
 
-            // OFFSET CORREGIDO: 8 (overhead) + 32 (saved regs) + param_index * 4
-            int paramOffset = 8 + savedRegsSpace + (i * 4); // = 40 + i*4
+            int paramOffset = startOffset + (i * 4);
 
             String paramReg;
             if (i < 4) {
@@ -2464,7 +2479,7 @@ public class MIPSGenerator {
             ));
 
             instructions.add(MIPSInstruction.comment(
-                    "Loaded " + paramName + " from " + paramOffset + "($fp) into " + paramReg
+                    "Loaded param '" + paramName + "' from " + paramOffset + "($fp) into " + paramReg
             ));
 
             allocator.markClean(paramReg);
@@ -2476,12 +2491,20 @@ public class MIPSGenerator {
      */
     private void generateFunctionEpilog(TACInstruction tac) {
         String functionName = tac.getLabel();
-        instructions.add(MIPSInstruction.label(functionName + "_epilog"));
 
         Symbol funcSym = tacGenerator.getSymbol(functionName);
         boolean isMethod = funcSym != null && funcSym.getEnclosingClassName() != null;
+
         int paramCount = funcSym != null ? funcSym.getParamCount() : 0;
-        if (isMethod) paramCount++;
+
+        // Generar el label correcto para el epilog
+        String epilogLabel = functionName + "_epilog";
+        if (isMethod) {
+            epilogLabel = funcSym.getEnclosingClassName() + "_" + functionName + "_epilog";
+            paramCount++;
+        }
+
+        instructions.add(MIPSInstruction.label(epilogLabel));
 
         int localSpace = calculateLocalSpace();
         int paramsSpace = Math.min(paramCount, 4) * 4;
